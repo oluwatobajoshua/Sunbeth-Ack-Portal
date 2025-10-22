@@ -1,15 +1,13 @@
 /**
  * RBACContext: Determines user role and permissions.
  *
- * - Live mode: Reads Azure AD group memberships via Graph using the MSAL token.
+ * - Reads Azure AD group memberships via Graph using the MSAL token.
  * - Environment-based roles: Super admins, admins, and managers can be configured in .env
- * - Mock mode: Reads groups from localStorage (mock_user_groups) to enable UI testing.
  * - Exposes simple booleans (canSeeAdmin, canEditAdmin) for component gating.
  */
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { fetchUserGroups } from '../services/graphService';
-import { useRuntimeMock } from '../utils/runtimeMock';
 
 type RBAC = { role: 'SuperAdmin'|'Admin'|'Manager'|'Employee', canSeeAdmin: boolean, canEditAdmin: boolean, isSuperAdmin: boolean };
 const defaultRBAC: RBAC = { role: 'Employee', canSeeAdmin: false, canEditAdmin: false, isSuperAdmin: false };
@@ -50,46 +48,10 @@ const determineRole = (userEmail: string, groups: string[]): RBAC['role'] => {
 
 export const RBACProvider: React.FC<{children: React.ReactNode}> = ({ children }) => {
   const { token, account } = useAuth();
-  const runtimeMock = useRuntimeMock();
   const [role, setRole] = useState<RBAC['role']>('Employee');
 
-  const computeFromMock = () => {
-    try {
-      const raw = localStorage.getItem('mock_user_groups');
-      const groups: string[] = raw ? JSON.parse(raw) : [];
-      // In mock mode, check environment variables first if user email is available
-      if (account?.username) {
-        const envRole = determineRole(account.username, groups);
-        if (envRole !== 'Employee') return envRole;
-      }
-      if (groups.some(g => config.Admin.groups.includes(g))) return 'Admin' as RBAC['role'];
-      if (groups.some(g => config.Manager.groups.includes(g))) return 'Manager' as RBAC['role'];
-    } catch (e) { /* fallthrough */ }
-    return 'Employee' as RBAC['role'];
-  };
-
-  // Mock mode: derive role from localStorage and respond immediately to changes
+  // Fetch groups from Graph when token is available
   useEffect(() => {
-    if (!runtimeMock) return;
-    const setFromMock = () => setRole(computeFromMock());
-    setFromMock();
-    const onStorage = (e: StorageEvent) => {
-      if (e.key && e.key !== 'mock_user_groups') return;
-      setFromMock();
-      try { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: `Role set to ${computeFromMock()} (mock)` } })); } catch {}
-    };
-    const onRoleChange = () => setFromMock();
-    window.addEventListener('storage', onStorage as EventListener);
-    window.addEventListener('sunbeth:roleChange', onRoleChange as EventListener);
-    return () => {
-      window.removeEventListener('storage', onStorage as EventListener);
-      window.removeEventListener('sunbeth:roleChange', onRoleChange as EventListener);
-    };
-  }, [runtimeMock]);
-
-  // Live mode: fetch groups from Graph when token is available
-  useEffect(() => {
-    if (runtimeMock) return;
     if (!token || !account) { setRole('Employee'); return; }
     let active = true;
     
@@ -110,7 +72,7 @@ export const RBACProvider: React.FC<{children: React.ReactNode}> = ({ children }
       setRole(finalRole);
     }).catch(() => { if (active) setRole('Employee'); });
     return () => { active = false; };
-  }, [runtimeMock, token, account]);
+  }, [token, account]);
 
   const value: RBAC = useMemo(() => ({
     role,

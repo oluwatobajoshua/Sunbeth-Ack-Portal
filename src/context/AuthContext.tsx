@@ -5,7 +5,6 @@
  * - Processes redirect responses on mount and only attaches an account after acquiring a token.
  * - Popup-first with redirect fallback to avoid popup blockers.
  * - Suppresses auto re-attach immediately after logout via a suppression flag.
- * - Mock mode (REACT_APP_USE_MOCK=true) skips MSAL entirely and sets a mock account on login.
  *
  * Exposed API:
  * - account, token, photo
@@ -14,7 +13,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { msalInstance, AccountInfo } from '../services/msalConfig';
 import { info, warn, error as logError } from '../diagnostics/logger';
-import { useRuntimeMock } from '../utils/runtimeMock';
 import { getInteractiveMode } from '../services/authInteractive';
 
 type AuthCtx = {
@@ -43,15 +41,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [account, setAccount] = useState<AccountInfo | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [photo, setPhoto] = useState<string | null>(null);
-  const runtimeMock = useRuntimeMock();
   const SUPPRESS_KEY = 'sunbeth:suppressAutoLogin';
   const [loggingIn, setLoggingIn] = useState(false);
 
   useEffect(() => {
-    if (runtimeMock) {
-      info('AuthContext (mock): skipping MSAL account checks');
-      return;
-    }
     // Always process redirect responses first so loginRedirect can complete
     try {
       const hasAuthParams = (() => {
@@ -108,7 +101,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   useEffect(() => {
-    if (!account || runtimeMock) return;
+    if (!account) return;
     info('AuthContext acquiring token silently', { account: account.username });
     msalInstance.acquireTokenSilent({ scopes: ['User.Read'], account })
       .then(r => { info('AuthContext acquired token silently'); setToken(r.accessToken); })
@@ -161,16 +154,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoggingIn(true);
       info('AuthContext: manual login requested');
       try { localStorage.removeItem(SUPPRESS_KEY); } catch {}
-      // In mock mode, do not perform MSAL flows; just set a mock account on demand
-      if (runtimeMock) {
-        info('AuthContext: enabling mock account (runtime mock)');
-        setAccount({ homeAccountId: 'mock', environment: 'mock', tenantId: 'mock', username: 'mock.user@sunbeth.com', name: 'Mock User' } as AccountInfo);
-        setToken(null);
-        setPhoto('/logo192.png');
-        try { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Mock sign-in active' } })); } catch (e) { }
-        // Do not reload the page in mock mode; rendering will switch to Dashboard based on account state
-        return;
-      }
+      
       const mode = getInteractiveMode();
       const scopes = ['User.Read', 'openid', 'profile'];
       const res = mode === 'popup'
@@ -235,15 +219,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = async () => {
     try {
       info('AuthContext: logout requested');
-      if (!runtimeMock) {
-        await msalInstance.logoutPopup();
-      }
+      await msalInstance.logoutPopup();
       setAccount(null);
       setToken(null);
       setPhoto(null);
       try { localStorage.setItem(SUPPRESS_KEY, 'true'); } catch {}
-  try { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Signed out' } })); } catch (e) { }
-  // No full reload; routes will render Landing based on account=null
+      try { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Signed out' } })); } catch (e) { }
+      // No full reload; routes will render Landing based on account=null
     } catch (e) {
       logError('logout failed', e);
       try { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Sign out failed' } })); } catch (er) { }
@@ -252,9 +234,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const getToken = async (scopes: string[] = ['User.Read']) => {
     info('AuthContext getToken', { scopes });
-  // In mock mode we don't provide real tokens; callers should avoid protected calls
-  if (runtimeMock) return null;
-  const acct = msalInstance.getActiveAccount() || msalInstance.getAllAccounts()[0] || account;
+    const acct = msalInstance.getActiveAccount() || msalInstance.getAllAccounts()[0] || account;
     if (!acct) {
       throw new Error('No active account');
     }

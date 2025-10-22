@@ -24,9 +24,8 @@ try { (window as any).__sunbethRunDiagnostics = runAuthAndGraphCheck } catch {}
   // Initialize MGT Msal2Provider so components and any MGT usage share auth state
   try {
     const enableMgt = (process.env.REACT_APP_ENABLE_MGT || '').toLowerCase() === 'true';
-    const isMock = process.env.REACT_APP_USE_MOCK === 'true';
     const isBrowser = typeof window !== 'undefined';
-    if (enableMgt && !isMock && isBrowser) {
+    if (enableMgt && isBrowser) {
       // Only attempt to load MGT dynamically if explicitly enabled and compatible
       const pca: any = (await import('./services/msalConfig')).msalInstance as any;
       const hasGetLogger = typeof pca?.getLogger === 'function';
@@ -51,8 +50,8 @@ try { (window as any).__sunbethRunDiagnostics = runAuthAndGraphCheck } catch {}
     <React.StrictMode>
       <ErrorBoundary>
           <App />
-          {/* DebugConsole: show only in mock mode */}
-          { (process.env.REACT_APP_USE_MOCK === 'true') && <DebugConsole /> }
+          {/* DebugConsole: show only in development mode */}
+          { process.env.NODE_ENV === 'development' && <DebugConsole /> }
           <GlobalToast />
       </ErrorBoundary>
     </React.StrictMode>

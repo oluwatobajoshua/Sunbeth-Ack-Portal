@@ -13,8 +13,8 @@ export const DebugConsole: React.FC = () => {
 
   const isDevUser = () => {
     try {
-      // Only show when MOCK mode is enabled
-      if (process.env.REACT_APP_USE_MOCK === 'true') return true;
+      // Only show in development mode
+      return process.env.NODE_ENV === 'development';
     } catch (e) {}
     return false;
   };

@@ -1,36 +1,12 @@
 import axios from 'axios';
 import { info, warn, error as logError } from '../diagnostics/logger';
-import { useRuntimeMock } from '../utils/runtimeMock';
 
-const useMock = () => useRuntimeMock();
-
+/**
+ * Send a user acknowledgement event.
+ *
+ * Posts to SQLite API if enabled, and/or to Flow webhook if configured.
+ */
 export const sendAcknowledgement = async (payload: any): Promise<void> => {
-  if (useMock()) {
-    // simulate network and succeed
-    await new Promise(r => setTimeout(r, 250));
-    info('Mock ack sent', payload);
-    // persist to localStorage keyed by batchId -> array of docIds
-    try {
-      const key = 'mock_user_acks';
-      const raw = localStorage.getItem(key);
-      const map: Record<string, string[]> = raw ? JSON.parse(raw) : {};
-      const batchId = payload.batchId || '1';
-      map[batchId] = map[batchId] || [];
-      if (!map[batchId].includes(payload.documentId)) map[batchId].push(payload.documentId);
-      localStorage.setItem(key, JSON.stringify(map));
-      // notify UI that a mock ack occurred
-      try {
-        window.dispatchEvent(new CustomEvent('mockAck', { detail: { batchId: batchId, documentId: payload.documentId } }));
-        window.dispatchEvent(new CustomEvent('sunbeth:progressUpdated', { detail: { batchId: batchId, documentId: payload.documentId, mock: true } }));
-      } catch (e) {
-        // ignore
-      }
-    } catch (e) {
-      warn('Failed to persist mock ack', e);
-    }
-    return;
-  }
-
   // If SQLite API is enabled, post to it for persistence (in addition to Flow if configured)
   const sqliteEnabled = (process.env.REACT_APP_ENABLE_SQLITE === 'true') && !!process.env.REACT_APP_API_BASE;
   if (sqliteEnabled) {
@@ -50,16 +26,10 @@ export const sendAcknowledgement = async (payload: any): Promise<void> => {
       await axios.post(url, payload, { headers: { 'Content-Type': 'application/json' } });
     }
     try {
-      window.dispatchEvent(new CustomEvent('sunbeth:progressUpdated', { detail: { batchId: payload.batchId, documentId: payload.documentId, mock: false } }));
+      window.dispatchEvent(new CustomEvent('sunbeth:progressUpdated', { detail: { batchId: payload.batchId, documentId: payload.documentId } }));
     } catch {}
   } catch (e) {
     logError('Failed to send ack to flow', e);
     if (!sqliteEnabled) throw e;
   }
-/**
- * Send a user acknowledgement event.
- *
- * - In mock mode: writes to localStorage under 'mock_user_acks' and emits a 'mockAck' event.
- * - In live mode: if SQLite API is enabled, persists to /api/ack; also POSTs to Flow if configured.
- */
 };

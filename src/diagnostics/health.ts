@@ -1,10 +1,8 @@
 import { msalInstance } from '../services/msalConfig';
 import { info, warn, error as logError } from './logger';
-import { getGraphToken, getDataverseToken } from '../services/authTokens';
+import { getGraphToken } from '../services/authTokens';
 
 export type Step = { name: string; ok: boolean; detail?: string };
-
-const baseUrl = `${process.env.REACT_APP_DATAVERSE_URL?.replace(/\/$/, '')}/api/data/v9.2`;
 
 export async function runAuthAndGraphCheck(): Promise<Step[]> {
   const steps: Step[] = [];
@@ -12,12 +10,13 @@ export async function runAuthAndGraphCheck(): Promise<Step[]> {
     // env checks
     const clientId = process.env.REACT_APP_CLIENT_ID;
     const tenant = process.env.REACT_APP_TENANT_ID;
-  const dv = process.env.REACT_APP_DATAVERSE_URL;
-  const dvEnabled = process.env.REACT_APP_ENABLE_DATAVERSE === 'true';
+    const sqliteEnabled = process.env.REACT_APP_ENABLE_SQLITE === 'true';
+    const apiBase = process.env.REACT_APP_API_BASE;
+    
     steps.push({ name: 'Env: REACT_APP_CLIENT_ID', ok: !!clientId, detail: clientId ? clientId : 'MISSING' });
     steps.push({ name: 'Env: REACT_APP_TENANT_ID', ok: !!tenant, detail: tenant ? tenant : 'MISSING' });
-  steps.push({ name: 'Env: REACT_APP_DATAVERSE_URL', ok: !!dv, detail: dv ? dv : 'MISSING (skip if Dataverse disabled)' });
-  steps.push({ name: 'Env: REACT_APP_ENABLE_DATAVERSE', ok: true, detail: dvEnabled ? 'true (enabled)' : 'false (disabled - Dataverse will be skipped)' });
+    steps.push({ name: 'Env: REACT_APP_ENABLE_SQLITE', ok: true, detail: sqliteEnabled ? 'true (enabled)' : 'false (disabled)' });
+    steps.push({ name: 'Env: REACT_APP_API_BASE', ok: !sqliteEnabled || !!apiBase, detail: apiBase ? apiBase : 'MISSING (required if SQLite enabled)' });
 
     // accounts
     const accts = msalInstance.getAllAccounts();
@@ -25,7 +24,7 @@ export async function runAuthAndGraphCheck(): Promise<Step[]> {
 
     let account = accts && accts[0];
     if (!account) {
-      steps.push({ name: 'MSAL: No signed-in account', ok: false, detail: 'No account found. Please sign in or use mock mode.' });
+      steps.push({ name: 'MSAL: No signed-in account', ok: false, detail: 'No account found. Please sign in.' });
       return steps;
     }
 
@@ -107,32 +106,22 @@ export async function runAuthAndGraphCheck(): Promise<Step[]> {
       steps.push({ name: 'Graph: Mail.Send scope', ok: false, detail: 'Mail.Send not consented?' });
     }
 
-    // Dataverse: basic call to toba_batches (only if explicitly enabled)
-    if (dvEnabled && dv) {
+    // SQLite API health check (if enabled)
+    if (sqliteEnabled && apiBase) {
       try {
-        // Use Dataverse token (/.default)
-        const dvToken = await getDataverseToken();
-        const res = await fetch(`${baseUrl}/toba_batches?$top=1`, { headers: { Authorization: `Bearer ${dvToken}`, Accept: 'application/json' } });
+        const res = await fetch(`${apiBase.replace(/\/$/, '')}/api/health`);
         if (!res.ok) {
-          const detail = res.status === 404
-            ? '404 Not Found: Ensure a Dataverse database exists for this environment.'
-            : `status=${res.status}`;
-          steps.push({ name: 'Dataverse: GET toba_batches', ok: false, detail });
+          steps.push({ name: 'SQLite API: Health check', ok: false, detail: `status=${res.status}` });
         } else {
-          const j = await res.json();
-          const c = Array.isArray(j.value) ? j.value.length : 0;
-          steps.push({ name: 'Dataverse: GET toba_batches', ok: true, detail: `count=${c}` });
+          steps.push({ name: 'SQLite API: Health check', ok: true, detail: 'API responding' });
         }
       } catch (e) {
-        logError('Dataverse fetch failed', e);
-        const msg = String(e || '')
-        const hint = msg.includes('AADSTS650057')
-          ? 'Invalid resource: Add Dynamics CRM (Dataverse) delegated permission "user_impersonation" to your app registration and grant admin consent, or disable Dataverse by setting REACT_APP_ENABLE_DATAVERSE=false.'
-          : 'If you are not using Dataverse, set REACT_APP_ENABLE_DATAVERSE=false. If you intend to use it, create a Dataverse database for this environment (see dataverse/scripts/create-database.ps1).';
-        steps.push({ name: 'Dataverse: GET toba_batches', ok: false, detail: `${msg}\n${hint}` });
+        steps.push({ name: 'SQLite API: Health check', ok: false, detail: `Connection failed: ${String(e)}` });
       }
+    } else if (sqliteEnabled) {
+      steps.push({ name: 'SQLite API: Health check', ok: false, detail: 'Enabled but REACT_APP_API_BASE not configured' });
     } else {
-      steps.push({ name: 'Dataverse: Skipped', ok: true, detail: 'Disabled or not configured' });
+      steps.push({ name: 'SQLite API: Skipped', ok: true, detail: 'Disabled' });
     }
 
   } catch (err) {

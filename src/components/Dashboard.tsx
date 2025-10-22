@@ -1,15 +1,13 @@
 /**
  * Dashboard: Shows assigned batches with per-batch progress.
  *
- * - In live mode, data is fetched from Dataverse via dbService; on error an empty/error state is shown.
- * - In mock mode, the Dev Panel can seed local data; progress updates on 'mockAck' events.
+ * Data is fetched from the configured backend via dbService; on error an empty/error state is shown.
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getBatches, getUserProgress } from '../services/dbService';
 import type { Batch } from '../types/models';
-import { useRuntimeMock } from '../utils/runtimeMock';
 
 const Dashboard: React.FC = () => {
   const { token, account } = useAuth();
@@ -17,13 +15,12 @@ const Dashboard: React.FC = () => {
   const [progressMap, setProgressMap] = useState<Record<string, { percent: number; total: number; acknowledged: number }>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const runtimeMock = useRuntimeMock();
 
   useEffect(() => {
     const load = async () => {
       try {
         setLoading(true);
-  const list = await getBatches(runtimeMock ? undefined : token ?? undefined, account?.username || undefined);
+        const list = await getBatches(token ?? undefined, account?.username || undefined);
         setBatches(Array.isArray(list) ? list : []);
         setError(null);
       } catch {
@@ -31,14 +28,12 @@ const Dashboard: React.FC = () => {
         setError('Unable to load your batches.');
       } finally { setLoading(false); }
     };
-    const sqliteEnabled = (process.env.REACT_APP_ENABLE_SQLITE === 'true') && !!process.env.REACT_APP_API_BASE;
-    if (runtimeMock || sqliteEnabled) load();
-    else if (token) load();
-  }, [token, runtimeMock, account?.username]);
+    load();
+  }, [token, account?.username]);
 
   useEffect(() => {
-  if (!Array.isArray(batches) || batches.length === 0) return;
-    // fetch progress per-batch (mock)
+    if (!Array.isArray(batches) || batches.length === 0) return;
+    // fetch progress per-batch
     (async () => {
       const m: Record<string, { percent: number; total: number; acknowledged: number }> = {};
       for (const b of batches) {
@@ -53,7 +48,7 @@ const Dashboard: React.FC = () => {
     })();
   }, [batches, token, account?.username]);
 
-  // listen for mock ack events to refresh progress
+  // listen for progress update events to refresh progress
   useEffect(() => {
     const h = async (e: Event) => {
       const ev = e as CustomEvent<any>;
@@ -64,13 +59,11 @@ const Dashboard: React.FC = () => {
         setProgressMap(prev => ({ ...prev, [batchId]: { percent: p.percent, total: p.total ?? 0, acknowledged: p.acknowledged ?? 0 } }));
       } catch { }
     };
-    window.addEventListener('mockAck', h as EventListener);
     window.addEventListener('sunbeth:progressUpdated', h as EventListener);
     return () => {
-      window.removeEventListener('mockAck', h as EventListener);
       window.removeEventListener('sunbeth:progressUpdated', h as EventListener);
     };
-  }, [runtimeMock, token]);
+  }, [token]);
 
   const formatDate = (d?: string) => {
     if (!d) return '—';

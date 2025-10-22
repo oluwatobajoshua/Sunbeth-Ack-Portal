@@ -3,10 +3,9 @@ import { info, warn, error as logError } from '../diagnostics/logger';
 
 // Determine if MSAL can be safely used in the current runtime. In Jest/jsdom or
 // other non-browser environments, the Web Crypto API may be missing which causes
-// MSAL to throw on construction. Also disable MSAL entirely when running in mock mode.
+// MSAL to throw on construction.
 const canUseMsal = (): boolean => {
   try {
-    if (process.env.REACT_APP_USE_MOCK === 'true') return false;
     if (typeof window === 'undefined') return false;
     const anyWin: any = window as any;
     return !!(anyWin.crypto && (anyWin.crypto.subtle || anyWin.msCrypto));
@@ -16,7 +15,7 @@ const canUseMsal = (): boolean => {
 };
 
 // Create a minimal safe fallback object when MSAL is disabled. Methods either no-op or
-// return sensible defaults used by our AuthContext guards. All calls in mock mode avoid MSAL anyway.
+// return sensible defaults used by our AuthContext guards.
 const createMsalFallback = () => {
   const noop = () => undefined as any;
   return {
@@ -47,15 +46,13 @@ export const msalInstance: PublicClientApplication = canUseMsal()
           loggerCallback: (level, message, containsPii) => {
             try {
               if (containsPii) return;
-              const isMock = process.env.REACT_APP_USE_MOCK === 'true';
               if (level === LogLevel.Error) logError('msal', message);
               else if (level === LogLevel.Warning) warn('msal', message);
-              else if (isMock) info('msal', message); // suppress info/verbose in live
+              else info('msal', message);
             } catch (e) { /* ignore */ }
           },
           piiLoggingEnabled: false,
-          // Reduce noise in live; keep detailed logs in mock
-          logLevel: (process.env.REACT_APP_USE_MOCK === 'true') ? LogLevel.Info : LogLevel.Warning
+          logLevel: LogLevel.Warning
         }
       }
     })
@@ -70,16 +67,7 @@ try {
       // Log useful event types
       const type = (ev && (ev as any).eventType) || 'msal_event';
       const payload = (ev && (ev as any).payload) || {};
-      const isMock = process.env.REACT_APP_USE_MOCK === 'true';
-      if (isMock) info('msal:event', { type, payload });
-      try {
-        // Only store MSAL events for on-screen diagnostics in mock/local use
-        if (isMock) {
-          const arr = (window as any).__sunbethMsalEvents = (window as any).__sunbethMsalEvents || [];
-          arr.push({ ts: new Date().toISOString(), type, payload });
-          if (arr.length > 200) arr.shift();
-        }
-      } catch (e) { }
+      info('msal:event', { type, payload });
     } catch (e) {
       try { logError('msal:event logging failed', e); } catch { }
     }

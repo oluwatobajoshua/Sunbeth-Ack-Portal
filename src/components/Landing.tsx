@@ -7,12 +7,9 @@ const Landing: React.FC = () => {
   const [variant, setVariant] = useState<string>(() => { try { return localStorage.getItem('landing_variant') || 'regular'; } catch { return 'regular'; } });
   useEffect(() => {
     const read = () => { try { setVariant(localStorage.getItem('landing_variant') || 'regular'); } catch { /* noop */ } };
-    const onMockData = () => read();
     const onStorage = (e: StorageEvent) => { if (!e.key || e.key === 'landing_variant') read(); };
-    window.addEventListener('mockDataChanged', onMockData as EventListener);
     window.addEventListener('storage', onStorage as EventListener);
     return () => {
-      window.removeEventListener('mockDataChanged', onMockData as EventListener);
       window.removeEventListener('storage', onStorage as EventListener);
     };
   }, []);

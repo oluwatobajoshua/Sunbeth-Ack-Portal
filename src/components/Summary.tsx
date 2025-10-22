@@ -2,11 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { getUserProgress } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
-import { useRuntimeMock } from '../utils/runtimeMock';
 
 const Summary: React.FC = () => {
   const { token, account } = useAuth();
-  const runtimeMock = useRuntimeMock();
   const loc = useLocation();
   const qs = new URLSearchParams(loc.search);
   const batchId = qs.get('batchId') || undefined;
@@ -17,14 +15,14 @@ const Summary: React.FC = () => {
     (async () => {
       if (!batchId) return; // no specific batch context
       try {
-  const p = await getUserProgress(batchId, runtimeMock ? undefined : token ?? undefined, undefined, account?.username || undefined);
+        const p = await getUserProgress(batchId, token ?? undefined, undefined, account?.username || undefined);
         if (active) setPercent(p.percent);
       } catch {
         if (active) setPercent(null);
       }
     })();
     return () => { active = false; };
-  }, [batchId, token, runtimeMock, account?.username]);
+  }, [batchId, token, account?.username]);
 
   const isComplete = percent !== null && percent >= 100;
 

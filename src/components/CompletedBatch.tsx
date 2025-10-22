@@ -3,24 +3,22 @@ import { Link, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getDocumentsByBatch, getAcknowledgedDocIds } from '../services/dbService';
 import type { Doc } from '../types/models';
-import { useRuntimeMock } from '../utils/runtimeMock';
 
 const CompletedBatch: React.FC = () => {
   const { id } = useParams();
   const { token, account } = useAuth();
-  const runtimeMock = useRuntimeMock();
   const [docs, setDocs] = useState<Doc[]>([]);
   const [ackIds, setAckIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (!id) return;
     (async () => {
-      const list = await getDocumentsByBatch(id, runtimeMock ? undefined : token ?? undefined);
+      const list = await getDocumentsByBatch(id, token ?? undefined);
       setDocs(list);
-      const a = await getAcknowledgedDocIds(id, runtimeMock ? undefined : token ?? undefined, account?.username || undefined);
+      const a = await getAcknowledgedDocIds(id, token ?? undefined, account?.username || undefined);
       setAckIds(a);
     })();
-  }, [id, token, runtimeMock, account?.username]);
+  }, [id, token, account?.username]);
 
   const ackedDocs = useMemo(() => docs.filter(d => ackIds.includes(d.toba_documentid)), [docs, ackIds]);
 

@@ -6,10 +6,8 @@ import { AuthProvider } from './context/AuthContext';
 import { RBACProvider } from './context/RBACContext';
 import { AppRoutes, RouteChangeLogger } from './routes';
 import Layout from './Layout';
-import { useRuntimeMock } from './utils/runtimeMock';
 
 const App: React.FC = () => {
-  const runtimeMock = useRuntimeMock();
   const tree = (
     <AuthProvider>
       <RBACProvider>
@@ -23,8 +21,8 @@ const App: React.FC = () => {
     </AuthProvider>
   );
 
-  // Only provide MSAL context in live mode; in mock mode msal-react will not be used
-  return runtimeMock ? tree : (
+  // Always provide MSAL context
+  return (
     <MsalProvider instance={msalInstance}>
       {tree}
     </MsalProvider>

@@ -1,8 +1,7 @@
 /**
  * BatchDetail: Lists documents for a selected batch.
  *
- * Live: Loads from Dataverse using the MSAL-acquired token.
- * Mock: Loads from localStorage via dbService when REACT_APP_USE_MOCK=true.
+ * Loads from the configured backend (SQLite API or SharePoint Lists).
  * No artificial fallbacks; empty/error state is shown if the call fails.
  */
 import React, { useEffect, useState } from 'react';
@@ -10,7 +9,6 @@ import { Link, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getDocumentsByBatch, getAcknowledgedDocIds } from '../services/dbService';
 import type { Doc } from '../types/models';
-import { useRuntimeMock } from '../utils/runtimeMock';
 
 const BatchDetail: React.FC = () => {
   const { id } = useParams();
@@ -18,7 +16,6 @@ const BatchDetail: React.FC = () => {
   const [docs, setDocs] = useState<Doc[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const runtimeMock = useRuntimeMock();
   const [ackIds, setAckIds] = useState<string[]>([]);
 
   useEffect(() => {
@@ -26,19 +23,19 @@ const BatchDetail: React.FC = () => {
     const run = async () => {
       try {
         setLoading(true);
-        const list = await getDocumentsByBatch(id, runtimeMock ? undefined : token ?? undefined);
+        const list = await getDocumentsByBatch(id, token ?? undefined);
         setDocs(list);
         setError(null);
-    // fetch acknowledged doc ids for current user
-    const acks = await getAcknowledgedDocIds(id, runtimeMock ? undefined : token ?? undefined, account?.username || undefined);
+        // fetch acknowledged doc ids for current user
+        const acks = await getAcknowledgedDocIds(id, token ?? undefined, account?.username || undefined);
         setAckIds(acks);
       } catch {
         setDocs([]);
         setError('Unable to load documents for this batch.');
       } finally { setLoading(false); }
     };
-    if (runtimeMock) run(); else if (token) run();
-  }, [token, id, runtimeMock, account?.username]);
+    run();
+  }, [token, id, account?.username]);
 
   return (
     <div className="container">

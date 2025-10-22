@@ -4,8 +4,6 @@ import { useAuth } from './context/AuthContext';
 import { useRBAC } from './context/RBACContext';
 // import DevPanel from './components/DevPanel';
 import { info } from './diagnostics/logger';
-import MockDevPanel from './components/MockDevPanel';
-import { useRuntimeMock } from './utils/runtimeMock';
 import { getBatches, getUserProgress } from './services/dbService';
 
 const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
@@ -26,70 +24,51 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const prevAccount = useRef(account);
-  const [mockStats, setMockStats] = useState<{ batches: number; acks: number }>({ batches: 0, acks: 0 });
   const [pending, setPending] = useState<number | null>(null);
   const [dueBy, setDueBy] = useState<string | null>(null);
 
-  const runtimeMock = useRuntimeMock();
   useEffect(() => {
-    info('Layout mounted', { runtimeMock });
+    info('Layout mounted');
     const compute = async () => {
-      // Mock mode: use localStorage seed
-      if (runtimeMock) {
-        const batchesRaw = localStorage.getItem('mock_batches');
-        let batches: Array<{ toba_batchid: string; toba_duedate?: string | null }>; 
-        try { batches = JSON.parse(batchesRaw || '[]'); } catch { batches = []; }
-        const batchesCount = Array.isArray(batches) ? batches.length : 0;
-
-        const acksRaw = localStorage.getItem('mock_user_acks');
-        const ackMap: Record<string, any[]> = acksRaw ? JSON.parse(acksRaw) : {};
-        const totalAcks = (Object.values(ackMap) as any[]).reduce((s: number, arr: any) => s + (Array.isArray(arr) ? arr.length : 0), 0);
-        setMockStats({ batches: batchesCount, acks: totalAcks });
-
-        // compute total pending across all batches + earliest due among incompletes
-        const docsByBatchRaw = localStorage.getItem('mock_docs_by_batch');
-        const docsMap: Record<string, any[]> = docsByBatchRaw ? JSON.parse(docsByBatchRaw) : {};
-        let pendingTotal = 0;
-        const incompleteDueDates: string[] = [];
-        for (const b of (batches || [])) {
-          const id = b?.toba_batchid || (b as any)?.id;
-          if (!id) continue;
-          const docs = Array.isArray(docsMap[id]) ? docsMap[id] : [];
-          const acked = Array.isArray(ackMap[id]) ? ackMap[id].length : 0;
-          const remain = Math.max(0, docs.length - acked);
-          pendingTotal += remain;
-          if (remain > 0 && b?.toba_duedate) incompleteDueDates.push(b.toba_duedate);
-        }
-        setPending(pendingTotal);
-        if (incompleteDueDates.length) {
-          const min = incompleteDueDates.reduce((a, d) => (new Date(d) < new Date(a) ? d : a));
-          setDueBy(min);
-        } else {
-          setDueBy(null);
-        }
-        return;
+      // if not signed in yet, show neutral state
+      if (!account || !token) { 
+        setPending(null); 
+        setDueBy(null); 
+        return; 
       }
 
       // Live mode: fetch batches + per-batch progress
       try {
-  // if not signed in yet, show neutral state
-  if (!account || !token) { setPending(null); setDueBy(null); setMockStats({ batches: 0, acks: 0 }); return; }
         // Use current token from context
         let list: any[] = [];
-  try { list = await getBatches(token, account?.username || undefined); } catch { list = []; }
-        if (!Array.isArray(list) || list.length === 0) { setPending(0); setDueBy(null); return; }
+        try { 
+          list = await getBatches(token, account?.username || undefined); 
+        } catch { 
+          list = []; 
+        }
+        
+        if (!Array.isArray(list) || list.length === 0) { 
+          setPending(0); 
+          setDueBy(null); 
+          return; 
+        }
+        
         let pendingTotal = 0;
         const incompletes: Array<{ due?: string | null }> = [];
+        
         for (const b of list) {
           try {
             const p = await getUserProgress(b.toba_batchid, token, undefined, account?.username || undefined);
-            const total = p.total ?? 0; const acked = p.acknowledged ?? 0;
+            const total = p.total ?? 0; 
+            const acked = p.acknowledged ?? 0;
             const remain = Math.max(0, total - acked);
             pendingTotal += remain;
             if ((p.percent ?? 0) < 100) incompletes.push({ due: b.toba_duedate });
           } catch {}
         }
+        
         setPending(pendingTotal);
+        
         if (incompletes.length) {
           const dates = incompletes.map(i => i.due).filter(Boolean) as string[];
           if (dates.length) {
@@ -104,20 +83,13 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
     };
 
     compute();
-    const onAck = () => compute();
-    const onMockData = () => compute();
     const onProgress = () => compute();
-    window.addEventListener('mockAck', onAck as EventListener);
-    window.addEventListener('mockDataChanged', onMockData as EventListener);
     window.addEventListener('sunbeth:progressUpdated', onProgress as EventListener);
     return () => {
-      window.removeEventListener('mockAck', onAck as EventListener);
-      window.removeEventListener('mockDataChanged', onMockData as EventListener);
       window.removeEventListener('sunbeth:progressUpdated', onProgress as EventListener);
     };
-  }, [runtimeMock, account, token]);
+  }, [account, token]);
   const rbac = useRBAC();
-  const devVisible = runtimeMock; // DevPanel only in mock mode
   // Redirect rules around auth transitions for cleaner UX
   useEffect(() => {
     const was = prevAccount.current;
@@ -155,16 +127,13 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
         {/* show auth area when signed-in; else show a light nav */}
         {account ? (
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 12, alignItems: 'center' }}>
-            {runtimeMock && <div style={{ background: '#222', color: '#9f9', padding: '6px 8px', borderRadius: 6, fontSize: 13 }}>Mock mode ON — {mockStats.batches} batches • {mockStats.acks} acks</div>}
-            {!runtimeMock && rbac.isSuperAdmin && (
+            {rbac.isSuperAdmin && (
               <div title="Super Admin (from REACT_APP_SUPER_ADMINS)" style={{ background: '#fee2e2', color: '#991b1b', padding: '6px 8px', borderRadius: 6, fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span>⚡ Super Admin</span>
               </div>
             )}
             <button className="btn ghost sm" aria-label="Toggle theme" onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}>{theme === 'light' ? 'Dark' : 'Light'} Mode</button>
             <button className="btn ghost sm" aria-label="Toggle sticky header" onClick={() => setStickyHeader(s => !s)}>{stickyHeader ? 'Unpin Header' : 'Pin Header'}</button>
-
-            {/* Mock toggle is removed; controlled via .env only */}
 
             <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '6px 8px', background: 'rgba(255,255,255,0.04)', borderRadius: 6 }}>
               <div style={{ width: 36, height: 36, borderRadius: 18, overflow: 'hidden', background: '#fff' }}>
@@ -223,7 +192,6 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
         <footer>© 2025 Sunbeth Global Concept. All Rights Reserved.</footer>
       </div>
-  { devVisible && <MockDevPanel /> }
     </>
   );
 };

@@ -11,6 +11,51 @@ const initSqlJs = require('sql.js');
 const http = require('http');
 const https = require('https');
 
+// Enhanced logging utility for batch operations
+const createLogger = (requestId) => {
+  const log = (level, operation, message, data = null) => {
+    const timestamp = new Date().toISOString();
+    const logEntry = {
+      timestamp,
+      level,
+      operation,
+      message,
+      requestId,
+      data
+    };
+    
+    const logMessage = `[${timestamp}] [${level.toUpperCase()}] [${requestId}] ${operation}: ${message}`;
+    
+    switch (level) {
+      case 'error':
+        console.error(logMessage, data || '');
+        break;
+      case 'warn':
+        console.warn(logMessage, data || '');
+        break;
+      case 'debug':
+        console.debug(logMessage, data || '');
+        break;
+      default:
+        console.log(logMessage, data || '');
+    }
+    
+    return logEntry;
+  };
+  
+  return {
+    info: (operation, message, data) => log('info', operation, message, data),
+    warn: (operation, message, data) => log('warn', operation, message, data),
+    error: (operation, message, data) => log('error', operation, message, data),
+    debug: (operation, message, data) => log('debug', operation, message, data)
+  };
+};
+
+// Generate unique request ID
+const generateRequestId = () => {
+  return Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+};
+
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'sunbeth.db');
 
@@ -38,6 +83,46 @@ async function start() {
   const app = express();
   app.use(cors());
   app.use(express.json({ limit: '2mb' }));
+  
+  // Request logging middleware
+  app.use((req, res, next) => {
+    req.requestId = generateRequestId();
+    req.logger = createLogger(req.requestId);
+    
+    const startTime = Date.now();
+    req.logger.info('request', `${req.method} ${req.url}`, {
+      ip: req.ip,
+      userAgent: req.get('User-Agent'),
+      contentType: req.get('Content-Type')
+    });
+    
+    // Override res.json to log responses
+    const originalJson = res.json.bind(res);
+    res.json = function(data) {
+      const duration = Date.now() - startTime;
+      req.logger.info('response', `${req.method} ${req.url} - ${res.statusCode}`, {
+        duration: `${duration}ms`,
+        status: res.statusCode,
+        dataSize: JSON.stringify(data).length
+      });
+      return originalJson(data);
+    };
+    
+    // Override res.status for error logging
+    const originalStatus = res.status.bind(res);
+    res.status = function(code) {
+      if (code >= 400) {
+        const duration = Date.now() - startTime;
+        req.logger.error('response', `${req.method} ${req.url} - ${code}`, {
+          duration: `${duration}ms`,
+          status: code
+        });
+      }
+      return originalStatus(code);
+    };
+    
+    next();
+  });
 
   // Utilities
   const exec = (sql, params = []) => {
@@ -528,11 +613,90 @@ async function start() {
 
   // Admin: create batch
   app.post('/api/batches', (req, res) => {
-    const { name, startDate = null, dueDate = null, description = null, status = 1 } = req.body || {};
-    const ok = exec('INSERT INTO batches (name, startDate, dueDate, status, description) VALUES (?, ?, ?, ?, ?)', [name, startDate, dueDate, status, description]);
-    if (!ok) return res.status(400).json({ error: 'insert_failed' });
-    const id = one('SELECT last_insert_rowid() as id')?.id;
-    res.json({ id });
+    const { logger } = req;
+    
+    try {
+      logger.info('batch-create', 'Starting batch creation process');
+      
+      const { name, startDate = null, dueDate = null, description = null, status = 1 } = req.body || {};
+      
+      // Validate required fields
+      if (!name || typeof name !== 'string' || !name.trim()) {
+        logger.error('batch-create', 'Validation failed: name is required', { providedName: name });
+        return res.status(400).json({ error: 'name_required', message: 'Batch name is required and must be a non-empty string' });
+      }
+      
+      // Validate optional fields
+      if (startDate !== null && startDate !== '' && typeof startDate !== 'string') {
+        logger.error('batch-create', 'Validation failed: invalid startDate format', { startDate });
+        return res.status(400).json({ error: 'invalid_start_date', message: 'Start date must be a string or null' });
+      }
+      
+      if (dueDate !== null && dueDate !== '' && typeof dueDate !== 'string') {
+        logger.error('batch-create', 'Validation failed: invalid dueDate format', { dueDate });
+        return res.status(400).json({ error: 'invalid_due_date', message: 'Due date must be a string or null' });
+      }
+      
+      const trimmedName = name.trim();
+      const finalStartDate = (startDate === '' || startDate === null) ? null : startDate;
+      const finalDueDate = (dueDate === '' || dueDate === null) ? null : dueDate;
+      const finalDescription = (description === '' || description === null) ? null : description;
+      const finalStatus = Number.isInteger(status) ? status : 1;
+      
+      logger.debug('batch-create', 'Validated input parameters', {
+        name: trimmedName,
+        startDate: finalStartDate,
+        dueDate: finalDueDate,
+        description: finalDescription ? 'provided' : 'null',
+        status: finalStatus
+      });
+      
+      // Insert into database
+      logger.info('batch-create', 'Inserting batch into database');
+      const sql = 'INSERT INTO batches (name, startDate, dueDate, status, description) VALUES (?, ?, ?, ?, ?)';
+      const params = [trimmedName, finalStartDate, finalDueDate, finalStatus, finalDescription];
+      
+      logger.debug('batch-create', 'Executing SQL insert', { sql, params });
+      
+      const ok = exec(sql, params);
+      if (!ok) {
+        logger.error('batch-create', 'Database insert failed', { sql, params });
+        return res.status(500).json({ error: 'insert_failed', message: 'Failed to insert batch into database' });
+      }
+      
+      // Get the generated ID
+      const idResult = one('SELECT last_insert_rowid() as id');
+      const id = idResult?.id;
+      
+      if (!id) {
+        logger.error('batch-create', 'Failed to retrieve generated batch ID');
+        return res.status(500).json({ error: 'id_retrieval_failed', message: 'Batch created but ID could not be retrieved' });
+      }
+      
+      // Verify batch exists and is accessible
+      const verifyBatch = one('SELECT id, name FROM batches WHERE id = ?', [id]);
+      if (!verifyBatch) {
+        logger.error('batch-create', 'Batch verification failed - batch not found after creation', { batchId: id });
+        return res.status(500).json({ error: 'verification_failed', message: 'Batch created but verification failed' });
+      }
+      
+      logger.info('batch-create', 'Batch created and verified successfully', {
+        batchId: id,
+        name: trimmedName,
+        startDate: finalStartDate,
+        dueDate: finalDueDate,
+        verifiedName: verifyBatch.name
+      });
+      
+      res.json({ id, batchId: id });
+      
+    } catch (error) {
+      logger.error('batch-create', 'Unexpected error during batch creation', {
+        error: error.message,
+        stack: error.stack
+      });
+      res.status(500).json({ error: 'internal_error', message: 'An unexpected error occurred during batch creation' });
+    }
   });
 
   // Admin: update batch
@@ -560,49 +724,298 @@ async function start() {
 
   // Admin: bulk add documents
   app.post('/api/batches/:id/documents', (req, res) => {
-    const id = Number(req.params.id);
-    const docs = Array.isArray(req.body?.documents) ? req.body.documents : [];
-    let count = 0;
+    const { logger } = req;
+    
     try {
-      db.run('BEGIN');
-      for (const d of docs) {
-        const { title, url, version = 1, requiresSignature = 0, driveId = null, itemId = null, source = null } = d || {};
-        if (!title || !url) continue;
-        db.run('INSERT OR IGNORE INTO documents (batchId, title, url, version, requiresSignature, driveId, itemId, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [id, String(title), String(url), Number(version) || 1, requiresSignature ? 1 : 0, driveId, itemId, source]);
-        count++;
+      logger.info('documents-create', 'Starting bulk document addition process');
+      
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        logger.error('documents-create', 'Invalid batch ID provided', { providedId: req.params.id, parsedId: id });
+        return res.status(400).json({ error: 'invalid_batch_id', message: 'Batch ID must be a positive integer' });
       }
-      db.run('COMMIT');
-      persist(db);
-      res.json({ inserted: count });
+      
+      // Check if batch exists
+      const batchExists = one('SELECT id, name FROM batches WHERE id = ?', [id]);
+      if (!batchExists) {
+        logger.error('documents-create', 'Batch not found', { batchId: id });
+        return res.status(404).json({ error: 'batch_not_found', message: 'Specified batch does not exist' });
+      }
+      
+      logger.info('documents-create', 'Batch verified for document insertion', { 
+        batchId: id, 
+        batchName: batchExists.name 
+      });
+      
+      const docs = Array.isArray(req.body?.documents) ? req.body.documents : [];
+      logger.info('documents-create', 'Processing document list', { 
+        batchId: id, 
+        totalDocuments: docs.length 
+      });
+      
+      if (docs.length === 0) {
+        logger.warn('documents-create', 'No documents provided in request');
+        return res.json({ inserted: 0, message: 'No documents provided' });
+      }
+      
+      let count = 0;
+      let skipped = 0;
+      const errors = [];
+      
+      logger.debug('documents-create', 'Starting database transaction');
+      db.run('BEGIN');
+      
+      try {
+        for (let i = 0; i < docs.length; i++) {
+          const d = docs[i];
+          const { title, url, version = 1, requiresSignature = 0, driveId = null, itemId = null, source = null } = d || {};
+          
+          // Validate document fields
+          if (!title || !url) {
+            logger.warn('documents-create', `Document ${i + 1} missing required fields`, { 
+              index: i, 
+              hasTitle: !!title, 
+              hasUrl: !!url 
+            });
+            skipped++;
+            errors.push(`Document ${i + 1}: Missing title or URL`);
+            continue;
+          }
+          
+          if (typeof title !== 'string' || typeof url !== 'string') {
+            logger.warn('documents-create', `Document ${i + 1} has invalid field types`, { 
+              index: i, 
+              titleType: typeof title, 
+              urlType: typeof url 
+            });
+            skipped++;
+            errors.push(`Document ${i + 1}: Title and URL must be strings`);
+            continue;
+          }
+          
+          logger.debug('documents-create', `Processing document ${i + 1}`, {
+            title: title.substring(0, 50) + (title.length > 50 ? '...' : ''),
+            url: url.substring(0, 100) + (url.length > 100 ? '...' : ''),
+            version,
+            requiresSignature: !!requiresSignature
+          });
+          
+          try {
+            db.run('INSERT OR IGNORE INTO documents (batchId, title, url, version, requiresSignature, driveId, itemId, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
+              [id, String(title), String(url), Number(version) || 1, requiresSignature ? 1 : 0, driveId, itemId, source]);
+            count++;
+          } catch (docError) {
+            logger.error('documents-create', `Failed to insert document ${i + 1}`, {
+              index: i,
+              error: docError.message,
+              title: title.substring(0, 50)
+            });
+            errors.push(`Document ${i + 1}: ${docError.message}`);
+            skipped++;
+          }
+        }
+        
+        logger.debug('documents-create', 'Committing database transaction');
+        db.run('COMMIT');
+        persist(db);
+        
+        logger.info('documents-create', 'Document addition completed', {
+          batchId: id,
+          inserted: count,
+          skipped: skipped,
+          totalProcessed: docs.length
+        });
+        
+        const result = { inserted: count };
+        if (skipped > 0) {
+          result.skipped = skipped;
+          result.errors = errors;
+        }
+        
+        res.json(result);
+        
+      } catch (transactionError) {
+        logger.error('documents-create', 'Transaction failed, rolling back', {
+          error: transactionError.message,
+          batchId: id,
+          processedCount: count
+        });
+        db.run('ROLLBACK');
+        throw transactionError;
+      }
+      
     } catch (e) {
-      db.run('ROLLBACK');
-      console.error(e);
-      res.status(400).json({ error: 'insert_failed' });
+      logger.error('documents-create', 'Unexpected error during document creation', {
+        error: e.message,
+        stack: e.stack,
+        batchId: req.params.id
+      });
+      
+      try {
+        db.run('ROLLBACK');
+      } catch (rollbackError) {
+        logger.error('documents-create', 'Failed to rollback transaction', { error: rollbackError.message });
+      }
+      
+      res.status(500).json({ error: 'insert_failed', message: 'Failed to add documents to batch' });
     }
   });
 
   // Admin: bulk add recipients
   app.post('/api/batches/:id/recipients', (req, res) => {
-    const id = Number(req.params.id);
-    const list = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
-    let count = 0;
+    const { logger } = req;
+    
     try {
-      db.run('BEGIN');
-      for (const r of list) {
-        const { businessId = null, user = null, email = null, displayName = null, department = null, jobTitle = null, location = null, primaryGroup = null } = r || {};
-        const emailLower = String(email || user || '').trim().toLowerCase();
-        if (!emailLower) continue;
-        db.run(`INSERT OR IGNORE INTO recipients (batchId, businessId, user, email, displayName, department, jobTitle, location, primaryGroup)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id, businessId, emailLower, emailLower, displayName, department, jobTitle, location, primaryGroup]);
-        count++;
+      logger.info('recipients-create', 'Starting bulk recipient addition process');
+      
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) {
+        logger.error('recipients-create', 'Invalid batch ID provided', { providedId: req.params.id, parsedId: id });
+        return res.status(400).json({ error: 'invalid_batch_id', message: 'Batch ID must be a positive integer' });
       }
-      db.run('COMMIT');
-      persist(db);
-      res.json({ inserted: count });
+      
+      // Check if batch exists
+      const batchExists = one('SELECT id, name FROM batches WHERE id = ?', [id]);
+      if (!batchExists) {
+        logger.error('recipients-create', 'Batch not found', { batchId: id });
+        return res.status(404).json({ error: 'batch_not_found', message: 'Specified batch does not exist' });
+      }
+      
+      logger.info('recipients-create', 'Batch verified for recipient insertion', { 
+        batchId: id, 
+        batchName: batchExists.name 
+      });
+      
+      const list = Array.isArray(req.body?.recipients) ? req.body.recipients : [];
+      logger.info('recipients-create', 'Processing recipient list', { 
+        batchId: id, 
+        totalRecipients: list.length 
+      });
+      
+      if (list.length === 0) {
+        logger.warn('recipients-create', 'No recipients provided in request');
+        return res.json({ inserted: 0, message: 'No recipients provided' });
+      }
+      
+      let count = 0;
+      let skipped = 0;
+      const errors = [];
+      const processedEmails = new Set();
+      
+      logger.debug('recipients-create', 'Starting database transaction');
+      db.run('BEGIN');
+      
+      try {
+        for (let i = 0; i < list.length; i++) {
+          const r = list[i];
+          const { businessId = null, user = null, email = null, displayName = null, department = null, jobTitle = null, location = null, primaryGroup = null } = r || {};
+          
+          const emailRaw = email || user || '';
+          const emailLower = String(emailRaw).trim().toLowerCase();
+          
+          // Validate email
+          if (!emailLower) {
+            logger.warn('recipients-create', `Recipient ${i + 1} missing email`, { 
+              index: i,
+              providedEmail: emailRaw,
+              providedUser: user
+            });
+            skipped++;
+            errors.push(`Recipient ${i + 1}: Missing email address`);
+            continue;
+          }
+          
+          // Basic email format validation
+          if (!emailLower.includes('@') || emailLower.length < 5) {
+            logger.warn('recipients-create', `Recipient ${i + 1} has invalid email format`, { 
+              index: i,
+              email: emailLower
+            });
+            skipped++;
+            errors.push(`Recipient ${i + 1}: Invalid email format`);
+            continue;
+          }
+          
+          // Check for duplicates in current batch
+          if (processedEmails.has(emailLower)) {
+            logger.warn('recipients-create', `Recipient ${i + 1} is duplicate in current request`, { 
+              index: i,
+              email: emailLower
+            });
+            skipped++;
+            errors.push(`Recipient ${i + 1}: Duplicate email in request`);
+            continue;
+          }
+          
+          processedEmails.add(emailLower);
+          
+          logger.debug('recipients-create', `Processing recipient ${i + 1}`, {
+            email: emailLower,
+            displayName: displayName || 'none',
+            businessId: businessId || 'none',
+            department: department || 'none'
+          });
+          
+          try {
+            db.run(`INSERT OR IGNORE INTO recipients (batchId, businessId, user, email, displayName, department, jobTitle, location, primaryGroup)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, 
+                    [id, businessId, emailLower, emailLower, displayName, department, jobTitle, location, primaryGroup]);
+            count++;
+          } catch (recipientError) {
+            logger.error('recipients-create', `Failed to insert recipient ${i + 1}`, {
+              index: i,
+              email: emailLower,
+              error: recipientError.message
+            });
+            errors.push(`Recipient ${i + 1}: ${recipientError.message}`);
+            skipped++;
+          }
+        }
+        
+        logger.debug('recipients-create', 'Committing database transaction');
+        db.run('COMMIT');
+        persist(db);
+        
+        logger.info('recipients-create', 'Recipient addition completed', {
+          batchId: id,
+          inserted: count,
+          skipped: skipped,
+          totalProcessed: list.length,
+          uniqueEmails: processedEmails.size
+        });
+        
+        const result = { inserted: count };
+        if (skipped > 0) {
+          result.skipped = skipped;
+          result.errors = errors;
+        }
+        
+        res.json(result);
+        
+      } catch (transactionError) {
+        logger.error('recipients-create', 'Transaction failed, rolling back', {
+          error: transactionError.message,
+          batchId: id,
+          processedCount: count
+        });
+        db.run('ROLLBACK');
+        throw transactionError;
+      }
+      
     } catch (e) {
-      db.run('ROLLBACK');
-      console.error(e);
-      res.status(400).json({ error: 'insert_failed' });
+      logger.error('recipients-create', 'Unexpected error during recipient creation', {
+        error: e.message,
+        stack: e.stack,
+        batchId: req.params.id
+      });
+      
+      try {
+        db.run('ROLLBACK');
+      } catch (rollbackError) {
+        logger.error('recipients-create', 'Failed to rollback transaction', { error: rollbackError.message });
+      }
+      
+      res.status(500).json({ error: 'insert_failed', message: 'Failed to add recipients to batch' });
     }
   });
 

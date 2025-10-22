@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useRuntimeMock } from '../utils/runtimeMock';
+import { getBusinesses } from '../services/dbService';
 
 // Types for analytics data
 interface KPIData {
@@ -36,53 +36,6 @@ interface DocumentStats {
   pending: number;
   avgTimeToComplete: number;
 }
-
-// Mock data generator
-const generateMockData = (): {
-  kpis: KPIData;
-  compliance: ComplianceData[];
-  trends: TrendData[];
-  documents: DocumentStats[];
-} => {
-  const departments = ['HR', 'IT', 'Finance', 'Sales', 'Marketing', 'Operations', 'Legal'];
-  
-  return {
-    kpis: {
-      totalBatches: 47,
-      activeBatches: 12,
-      totalUsers: 1847,
-      completionRate: 87.3,
-      overdueBatches: 3,
-      avgCompletionTime: 2.4,
-      lastUpdated: new Date().toISOString()
-    },
-    compliance: departments.map(dept => ({
-      department: dept,
-      totalUsers: Math.floor(Math.random() * 300) + 50,
-      completed: Math.floor(Math.random() * 250) + 40,
-      pending: Math.floor(Math.random() * 50) + 5,
-      overdue: Math.floor(Math.random() * 15),
-      completionRate: Math.round((Math.random() * 30 + 70) * 10) / 10
-    })),
-    trends: Array.from({ length: 30 }, (_, i) => ({
-      date: new Date(Date.now() - (29 - i) * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-      completions: Math.floor(Math.random() * 50) + 10,
-      newBatches: Math.floor(Math.random() * 5),
-      activeUsers: Math.floor(Math.random() * 200) + 100
-    })),
-    documents: [
-      'Code of Conduct', 'Health & Safety Policy', 'Data Protection Policy', 
-      'Anti-Harassment Policy', 'Remote Work Guidelines', 'IT Security Policy'
-    ].map(name => ({
-      documentName: name,
-      batchName: `Q1 2025 - ${name}`,
-      totalAssigned: Math.floor(Math.random() * 500) + 100,
-      acknowledged: Math.floor(Math.random() * 400) + 80,
-      pending: Math.floor(Math.random() * 100) + 10,
-      avgTimeToComplete: Math.round((Math.random() * 5 + 1) * 10) / 10
-    }))
-  };
-};
 
 // KPI Card Component
 const KPICard: React.FC<{ title: string; value: string | number; change?: string; color?: string; icon?: string }> = ({ 
@@ -263,9 +216,13 @@ const FilterPanel: React.FC<{ onFilterChange: (filters: any) => void; liveOption
 
 // Main Analytics Dashboard Component
 const AnalyticsDashboard: React.FC = () => {
-  const runtimeMock = useRuntimeMock();
   const [loading, setLoading] = useState(false);
-  const [data, setData] = useState<ReturnType<typeof generateMockData> | null>(null);
+  const [data, setData] = useState<{
+    kpis: KPIData;
+    compliance: ComplianceData[];
+    trends: TrendData[];
+    documents: DocumentStats[];
+  } | null>(null);
   const [filters, setFilters] = useState({});
   const [liveOptions, setLiveOptions] = useState<{ businesses: Array<{ id: string; name: string }>; departments: string[]; groups: string[] }>({ businesses: [], departments: [], groups: [] });
   const [recipients, setRecipients] = useState<any[]>([]);
@@ -276,16 +233,7 @@ const AnalyticsDashboard: React.FC = () => {
   const loadAnalyticsData = async () => {
     setLoading(true);
     try {
-      if (runtimeMock) {
-        // Mock visuals only in mock mode
-        setTimeout(() => {
-          setData(generateMockData());
-          setLoading(false);
-        }, 600);
-        return;
-      }
-
-      // Live mode: SQLite-only analytics
+      // SQLite analytics only
       if (sqliteEnabled) {
         try {
           // Build filter query
@@ -297,7 +245,7 @@ const AnalyticsDashboard: React.FC = () => {
           const [statsRes, recRes, bizRes, compRes, docRes, trendRes, actRes] = await Promise.all([
             fetch(`${apiBase}/api/stats${qs}`).then(r => r.json()),
             fetch(`${apiBase}/api/recipients${qs}`).then(r => r.json()),
-            fetch(`${apiBase}/api/businesses`).then(r => r.json()).catch(() => []),
+            getBusinesses().catch(() => []),
             fetch(`${apiBase}/api/compliance${qs}`).then(r => r.json()).catch(() => []),
             fetch(`${apiBase}/api/doc-stats${qs}`).then(r => r.json()).catch(() => []),
             fetch(`${apiBase}/api/trends${qs}`).then(r => r.json()).catch(() => ({ completions: [], newBatches: [], activeUsers: [] })),
@@ -317,7 +265,7 @@ const AnalyticsDashboard: React.FC = () => {
             : [];
           setLiveOptions({ businesses, departments: Array.from(deptSet).sort(), groups: Array.from(groupSet).sort() });
 
-          const live: ReturnType<typeof generateMockData> = {
+          const live = {
             kpis: { ...statsRes, lastUpdated: new Date().toISOString() },
             compliance: Array.isArray(compRes) ? compRes : [],
             trends: Array.isArray((trendRes as any).completions) ? (trendRes as any).completions.map((row: any, idx: number) => ({
@@ -340,7 +288,7 @@ const AnalyticsDashboard: React.FC = () => {
           return;
         }
       }
-      // SQLite not enabled and not in mock mode: show empty (no mock in live mode)
+      // SQLite not enabled: show empty state
       setData({
         kpis: { totalBatches: 0, activeBatches: 0, totalUsers: 0, completionRate: 0, overdueBatches: 0, avgCompletionTime: 0, lastUpdated: new Date().toISOString() },
         compliance: [],
@@ -356,7 +304,7 @@ const AnalyticsDashboard: React.FC = () => {
 
   useEffect(() => {
     loadAnalyticsData();
-  }, [filters, runtimeMock]);
+  }, [filters]);
 
   if (loading) {
     return (
@@ -365,7 +313,7 @@ const AnalyticsDashboard: React.FC = () => {
           <div style={{ fontSize: 24, marginBottom: 16 }}>📊</div>
           <div>Loading analytics dashboard...</div>
           <div className="small muted" style={{ marginTop: 8 }}>
-            {sqliteEnabled ? 'Fetching data from local SQLite API' : 'Fetching data from Microsoft Graph and Dataverse'}
+            {sqliteEnabled ? 'Fetching data from local SQLite API' : 'Fetching data from Microsoft Graph and configured backend'}
           </div>
         </div>
       </div>
@@ -400,7 +348,7 @@ const AnalyticsDashboard: React.FC = () => {
   {/* Filters */}
   <FilterPanel onFilterChange={setFilters} liveOptions={liveOptions} />
 
-      {/* KPIs (live-only values when in live mode; mock only in mock mode) */}
+      {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginBottom: 32 }}>
         <KPICard title="Total Batches" value={data.kpis.totalBatches} change="+5 this month" icon="📋" />
         <KPICard title="Active Batches" value={data.kpis.activeBatches} color="#17a2b8" icon="⚡" />
@@ -487,7 +435,7 @@ const AnalyticsDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Document Performance (live: no mock rows) */}
+      {/* Document Performance */}
       <div className="card" style={{ padding: 20, marginBottom: 32 }}>
         <h3 style={{ margin: '0 0 16px 0', fontSize: 18 }}>📄 Document Performance</h3>
         {data.documents.length === 0 ? (
@@ -511,13 +459,10 @@ const AnalyticsDashboard: React.FC = () => {
       <div className="card" style={{ padding: 20 }}>
         <h3 style={{ margin: '0 0 16px 0', fontSize: 18 }}>🔄 Recent Activity</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {(!runtimeMock && sqliteEnabled && activities.length === 0) && (
+          {(sqliteEnabled && activities.length === 0) && (
             <div className="small muted">No recent activity yet.</div>
           )}
-          {(runtimeMock ? [
-            { timestamp: new Date(Date.now() - 2*60*1000).toISOString(), user: 'John Smith', action: 'acknowledged', document: 'Code of Conduct', type: 'success' },
-            { timestamp: new Date(Date.now() - 5*60*1000).toISOString(), user: 'Sarah Johnson', action: 'created batch', document: 'Q1 2025 - IT Security', type: 'info' }
-          ] : activities).map((activity: any, i: number) => {
+          {activities.map((activity: any, i: number) => {
             const type = activity.type || (activity.action === 'acknowledged' ? 'success' : activity.action === 'created batch' ? 'info' : 'info');
             const rel = formatRelative(activity.timestamp);
             const labelUser = activity.user || 'System';

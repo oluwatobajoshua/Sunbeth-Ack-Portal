@@ -1,8 +1,8 @@
 /**
  * DocumentReader: Displays a single document within a batch and handles acknowledgement.
  *
- * - Reads documents via dbService (mock or live depending on .env).
- * - Sends acknowledgements via flowService; in mock mode also writes to localStorage and emits 'mockAck'.
+ * - Reads documents via dbService (SQLite API or SharePoint Lists).
+ * - Sends acknowledgements via flowService.
  * - Navigates previous/next between documents and shows progress.
  */
 import React, { useMemo, useState, useEffect } from 'react';
@@ -12,13 +12,11 @@ import { sendAcknowledgement } from '../services/flowService';
 import Toast from './Toast';
 import { getDocumentsByBatch, getUserProgress, getAcknowledgedDocIds } from '../services/dbService';
 import type { Doc } from '../types/models';
-import { useRuntimeMock } from '../utils/runtimeMock';
 
 const DocumentReader: React.FC = () => {
   const { id } = useParams();
   const { account, token, getToken } = useAuth();
   const [ack, setAck] = useState(false);
-  const runtimeMock = useRuntimeMock();
   const title = useMemo(() => `Document ${id}`, [id]);
   const [docs, setDocs] = useState<Doc[]>([]);
   const [index, setIndex] = useState<number>(0);
@@ -45,8 +43,6 @@ const DocumentReader: React.FC = () => {
       ackmethod: 'Clicked Accept'
     };
     try {
-      // optimistic update: dispatch mock ack event before sending so UI updates instantly
-  if (runtimeMock) { try { window.dispatchEvent(new CustomEvent('mockAck', { detail: { batchId: payload.batchId, documentId: payload.documentId } })); } catch {} }
       setToastMsg('Acknowledgement submitted');
       setShowToast(true);
       await sendAcknowledgement(payload);
@@ -91,7 +87,7 @@ const DocumentReader: React.FC = () => {
           const p = await getUserProgress(batchId, token ?? undefined, undefined, account?.username || undefined);
           setProgressText(`${p.percent}%`);
         } catch {}
-        // check if this doc is already acknowledged (mock implemented)
+        // check if this doc is already acknowledged
         try {
           const ackIds = await getAcknowledgedDocIds(batchId, token ?? undefined, account?.username || undefined);
           setAlreadyAcked(ackIds.includes(id!));

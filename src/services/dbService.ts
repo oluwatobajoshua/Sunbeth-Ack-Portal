@@ -2,37 +2,25 @@
  * Data access facade for the app.
  *
  * This module is the single entry-point for fetching and mutating data in the UI.
- * It automatically routes calls to either the in-browser mock database or
- * the live Dataverse Web API based on the build-time flag REACT_APP_USE_MOCK.
+ * It routes calls to different backends: SharePoint Lists or SQLite API.
  *
  * Contract:
- * - When REACT_APP_USE_MOCK === 'true':
- *   - All reads/writes go to localStorage via mockDatabaseService.
- * - When REACT_APP_USE_MOCK === 'false':
- *   - All reads go to Dataverse using the supplied MSAL token.
- *   - Writes (acks) are posted via flowService (see there for details).
+ * - When REACT_APP_ENABLE_SQLITE === 'true': Uses SQLite API backend
+ * - When REACT_APP_ENABLE_SP_LISTS === 'true': Uses SharePoint Lists backend
+ * - Default fallback to SQLite if no backend is explicitly configured
  *
  * Add new data operations here so the rest of the app stays environment-agnostic.
  */
-import { useRuntimeMock } from '../utils/runtimeMock';
-import * as mockDb from './mockDatabaseService';
-import * as dataverse from './dataverseService';
-import { whoAmI } from './dataverseProvisioning';
-import { getDataverseToken } from './authTokens';
-import { getAckedDocIdsForUser } from './dataverseService';
 import { spGetBatches, spGetDocumentsByBatch, spGetUserProgress, spGetAckedDocIdsForUser, spGetBusinesses, spGetBatchRecipients } from './spListsService';
 
-const useMock = () => useRuntimeMock();
-const dvEnabled = () => (process.env.REACT_APP_ENABLE_DATAVERSE === 'true') && !!process.env.REACT_APP_DATAVERSE_URL;
 const spListsEnabled = () => (process.env.REACT_APP_ENABLE_SP_LISTS === 'true') && !!(process.env.REACT_APP_SP_SITE_ID);
 const sqliteEnabled = () => (process.env.REACT_APP_ENABLE_SQLITE === 'true') && !!(process.env.REACT_APP_API_BASE);
 
 /**
  * Fetch the list of batches assigned to the user.
- * @param token Optional bearer token (required in live mode)
+ * @param token Optional bearer token (not used with current backends)
  */
 export const getBatches = async (token?: string, userEmail?: string) => {
-  if (useMock()) return mockDb.getBatches();
   if (sqliteEnabled()) {
     const base = process.env.REACT_APP_API_BASE as string;
     const url = `${base.replace(/\/$/, '')}/api/batches${userEmail ? `?email=${encodeURIComponent(userEmail)}` : ''}`;
@@ -40,9 +28,10 @@ export const getBatches = async (token?: string, userEmail?: string) => {
     if (!res.ok) return [] as any[];
     return await res.json();
   }
+  
   if (spListsEnabled()) {
     const rows = await spGetBatches(userEmail);
-    // Map SP rows to DV-like Batch shape expected by UI
+    // Map SP rows to batch shape expected by UI
     return rows.map((r: any) => ({
       toba_batchid: String(r.id),
       toba_name: r.Title || r.title || 'Batch',
@@ -51,29 +40,28 @@ export const getBatches = async (token?: string, userEmail?: string) => {
       toba_status: (r.status != null ? String(r.status) : undefined)
     }));
   }
-  if (!dvEnabled()) return mockDb.getBatches();
-  try {
-    const t = token || await getDataverseToken();
-    return await dataverse.getBatches(t, userEmail);
-  } catch (e) {
-    // Soft-fail in UI: return empty to avoid error banners
-    return [] as any[];
-  }
+  
+  // Default fallback to SQLite if not explicitly configured
+  const base = process.env.REACT_APP_API_BASE || 'http://localhost:4000';
+  const url = `${base.replace(/\/$/, '')}/api/batches${userEmail ? `?email=${encodeURIComponent(userEmail)}` : ''}`;
+  const res = await fetch(url);
+  if (!res.ok) return [] as any[];
+  return await res.json();
 };
 
 /**
  * Fetch the list of documents for a given batch.
- * @param batchId Batch identifier (Dataverse GUID string in live mode)
- * @param token Optional bearer token (required in live mode)
+ * @param batchId Batch identifier
+ * @param token Optional bearer token (not used with current backends)
  */
 export const getDocumentsByBatch = async (batchId: string, token?: string) => {
-  if (useMock()) return mockDb.getDocumentsByBatch(batchId);
   if (sqliteEnabled()) {
     const base = process.env.REACT_APP_API_BASE as string;
     const res = await fetch(`${base.replace(/\/$/, '')}/api/batches/${encodeURIComponent(batchId)}/documents`);
     if (!res.ok) return [] as any[];
     return await res.json();
   }
+  
   if (spListsEnabled()) {
     const rows = await spGetDocumentsByBatch(Number(batchId));
     return rows.map((r: any) => ({
@@ -84,24 +72,21 @@ export const getDocumentsByBatch = async (batchId: string, token?: string) => {
       toba_fileurl: r.url
     }));
   }
-  if (!dvEnabled()) return mockDb.getDocumentsByBatch(batchId);
-  try {
-    const t = token || await getDataverseToken();
-    return await dataverse.getDocumentsByBatch(batchId, t);
-  } catch (e) {
-    return [] as any[];
-  }
+  
+  // Default fallback to SQLite if not explicitly configured
+  const base = process.env.REACT_APP_API_BASE || 'http://localhost:4000';
+  const res = await fetch(`${base.replace(/\/$/, '')}/api/batches/${encodeURIComponent(batchId)}/documents`);
+  if (!res.ok) return [] as any[];
+  return await res.json();
 };
 
 /**
  * Compute user acknowledgement progress for a batch.
- * In mock mode this is computed from localStorage; in live mode this queries Dataverse.
  * @param batchId Batch identifier
- * @param token Optional bearer token (required in live mode)
- * @param userId Optional user id if your schema requires it
+ * @param token Optional bearer token (not used with current backends)
+ * @param userId Optional user id (not used with current backends)
  */
 export const getUserProgress = async (batchId: string, token?: string, userId?: string, userEmail?: string) => {
-  if (useMock()) return mockDb.getUserProgress(batchId);
   if (sqliteEnabled()) {
     const base = process.env.REACT_APP_API_BASE as string;
     const url = `${base.replace(/\/$/, '')}/api/batches/${encodeURIComponent(batchId)}/progress${userEmail ? `?email=${encodeURIComponent(userEmail)}` : ''}`;
@@ -109,43 +94,21 @@ export const getUserProgress = async (batchId: string, token?: string, userId?: 
     if (!res.ok) return { acknowledged: 0, total: 0, percent: 0 } as any;
     return await res.json();
   }
+  
   if (spListsEnabled()) return spGetUserProgress(Number(batchId), userEmail);
-  if (!dvEnabled()) return mockDb.getUserProgress(batchId);
-  const t = token || await getDataverseToken();
-  // If neither a Dataverse user id nor email is provided, try to resolve DV user id via WhoAmI.
-  let uid = userId;
-  try {
-    if (!uid && !userEmail) {
-      const me = await whoAmI();
-      uid = me.UserId || undefined;
-    }
-  } catch { /* ignore, fallback to undefined */ }
-  return dataverse.getUserProgress(batchId, t, uid, userEmail);
-};
-
-/**
- * Seed mock data into localStorage. No-op in live mode.
- */
-export const seed = (batches?: any, docs?: any, acks?: any) => {
-  if (useMock()) return mockDb.seed(batches, docs, acks);
-  // no-op for live
-  return;
-};
-
-/**
- * Clear mock data from localStorage. No-op in live mode.
- */
-export const clear = () => {
-  if (useMock()) return mockDb.clear();
-  return;
+  
+  // Default fallback to SQLite if not explicitly configured
+  const base = process.env.REACT_APP_API_BASE || 'http://localhost:4000';
+  const url = `${base.replace(/\/$/, '')}/api/batches/${encodeURIComponent(batchId)}/progress${userEmail ? `?email=${encodeURIComponent(userEmail)}` : ''}`;
+  const res = await fetch(url);
+  if (!res.ok) return { acknowledged: 0, total: 0, percent: 0 } as any;
+  return await res.json();
 };
 
 /**
  * List documents in a batch, separated into acknowledged vs pending (ids only for acknowledged).
- * In mock mode, uses localStorage acks. In live mode, this should query acknowledgements table.
  */
 export const getAcknowledgedDocIds = async (batchId: string, token?: string, userEmail?: string): Promise<string[]> => {
-  if (useMock()) return (await import('./mockDatabaseService')).getAcknowledgedDocIds(batchId);
   if (sqliteEnabled()) {
     const base = process.env.REACT_APP_API_BASE as string;
     const url = `${base.replace(/\/$/, '')}/api/batches/${encodeURIComponent(batchId)}/acks${userEmail ? `?email=${encodeURIComponent(userEmail)}` : ''}`;
@@ -154,11 +117,141 @@ export const getAcknowledgedDocIds = async (batchId: string, token?: string, use
     const j = await res.json();
     return Array.isArray(j?.ids) ? j.ids : [];
   }
+  
   if (spListsEnabled()) return (await spGetAckedDocIdsForUser(Number(batchId), userEmail)).map(String);
-  try {
-    const t = token || await getDataverseToken();
-    return await getAckedDocIdsForUser(batchId, t, userEmail);
-  } catch {
-    return [];
+  
+  // Default fallback to SQLite if not explicitly configured
+  const base = process.env.REACT_APP_API_BASE || 'http://localhost:4000';
+  const url = `${base.replace(/\/$/, '')}/api/batches/${encodeURIComponent(batchId)}/acks${userEmail ? `?email=${encodeURIComponent(userEmail)}` : ''}`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const j = await res.json();
+  return Array.isArray(j?.ids) ? j.ids : [];
+};
+
+/**
+ * Fetch the list of businesses.
+ * @param token Optional bearer token (not used with current backends)
+ */
+export const getBusinesses = async (token?: string) => {
+  if (sqliteEnabled()) {
+    const base = process.env.REACT_APP_API_BASE as string;
+    const res = await fetch(`${base.replace(/\/$/, '')}/api/businesses`);
+    if (!res.ok) return [] as any[];
+    return await res.json();
   }
+  
+  if (spListsEnabled()) {
+    const rows = await spGetBusinesses();
+    // Map SP rows to business shape expected by UI
+    return rows.map((r: any) => ({
+      id: r.id,
+      name: r.Title || r.title || r.name || 'Business',
+      code: r.code || null,
+      isActive: r.isActive !== false,
+      description: r.description || null
+    }));
+  }
+  
+  // Default fallback to SQLite if not explicitly configured
+  const base = process.env.REACT_APP_API_BASE || 'http://localhost:4000';
+  const res = await fetch(`${base.replace(/\/$/, '')}/api/businesses`);
+  if (!res.ok) return [] as any[];
+  return await res.json();
+};
+
+/**
+ * Create a new business.
+ * @param business Business data to create
+ * @param token Optional bearer token (not used with current backends)
+ */
+export const createBusiness = async (business: { name: string; code?: string; isActive?: boolean; description?: string }, token?: string) => {
+  if (sqliteEnabled()) {
+    const base = process.env.REACT_APP_API_BASE as string;
+    const res = await fetch(`${base.replace(/\/$/, '')}/api/businesses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(business)
+    });
+    if (!res.ok) throw new Error('Failed to create business');
+    return await res.json();
+  }
+  
+  if (spListsEnabled()) {
+    // Would need to implement SharePoint creation - not implemented yet
+    throw new Error('Business creation not implemented for SharePoint Lists');
+  }
+  
+  // Default fallback to SQLite if not explicitly configured
+  const base = process.env.REACT_APP_API_BASE || 'http://localhost:4000';
+  const res = await fetch(`${base.replace(/\/$/, '')}/api/businesses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(business)
+  });
+  if (!res.ok) throw new Error('Failed to create business');
+  return await res.json();
+};
+
+/**
+ * Update an existing business.
+ * @param id Business ID to update
+ * @param business Updated business data
+ * @param token Optional bearer token (not used with current backends)
+ */
+export const updateBusiness = async (id: number, business: { name?: string; code?: string; isActive?: boolean; description?: string }, token?: string) => {
+  if (sqliteEnabled()) {
+    const base = process.env.REACT_APP_API_BASE as string;
+    const res = await fetch(`${base.replace(/\/$/, '')}/api/businesses/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(business)
+    });
+    if (!res.ok) throw new Error('Failed to update business');
+    return await res.json();
+  }
+  
+  if (spListsEnabled()) {
+    // Would need to implement SharePoint update - not implemented yet
+    throw new Error('Business update not implemented for SharePoint Lists');
+  }
+  
+  // Default fallback to SQLite if not explicitly configured
+  const base = process.env.REACT_APP_API_BASE || 'http://localhost:4000';
+  const res = await fetch(`${base.replace(/\/$/, '')}/api/businesses/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(business)
+  });
+  if (!res.ok) throw new Error('Failed to update business');
+  return await res.json();
+};
+
+/**
+ * Delete a business.
+ * @param id Business ID to delete
+ * @param token Optional bearer token (not used with current backends)
+ */
+export const deleteBusiness = async (id: number, token?: string) => {
+  if (sqliteEnabled()) {
+    const base = process.env.REACT_APP_API_BASE as string;
+    const res = await fetch(`${base.replace(/\/$/, '')}/api/businesses/${id}`, {
+      method: 'DELETE'
+    });
+    if (!res.ok) throw new Error('Failed to delete business');
+    return await res.json();
+  }
+  
+  if (spListsEnabled()) {
+    // Would need to implement SharePoint delete - not implemented yet
+    throw new Error('Business deletion not implemented for SharePoint Lists');
+  }
+  
+  // Default fallback to SQLite if not explicitly configured
+  const base = process.env.REACT_APP_API_BASE || 'http://localhost:4000';
+  const res = await fetch(`${base.replace(/\/$/, '')}/api/businesses/${id}`, {
+    method: 'DELETE'
+  });
+  if (!res.ok) throw new Error('Failed to delete business');
+  return await res.json();
 };

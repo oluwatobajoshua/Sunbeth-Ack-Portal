@@ -37,11 +37,6 @@ const renderWithProviders = (ui: React.ReactNode, { account = null }: { account?
 };
 
 describe('UI/UX and navigation', () => {
-  beforeAll(() => {
-    // Ensure mock mode behaviors for components relying on env
-    (process as any).env = { ...(process as any).env, REACT_APP_USE_MOCK: 'true' };
-  });
-
   test('Landing visible when unauthenticated at root', async () => {
     renderWithProviders(
       <MemoryRouter initialEntries={['/']}>
@@ -65,7 +60,7 @@ describe('UI/UX and navigation', () => {
       <MemoryRouter initialEntries={['/about']}>
         <Layout><AppRoutes /></Layout>
       </MemoryRouter>,
-      { account: { name: 'Mock User', username: 'mock@sunbeth.com' } }
+      { account: { name: 'Test User', username: 'test@example.com' } }
     );
     // Dashboard welcome text should appear post-redirect
     await waitFor(async () => {
@@ -83,7 +78,7 @@ describe('UI/UX and navigation', () => {
           <AppRoutes />
         </Layout>
       </MemoryRouter>,
-      { account: { name: 'Mock User', username: 'mock@sunbeth.com' } }
+      { account: { name: 'Test User', username: 'test@example.com' } }
     );
     // Accept CTA should not be present for acknowledged doc id
     await waitFor(() => {

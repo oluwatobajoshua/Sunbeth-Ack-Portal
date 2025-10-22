@@ -2,14 +2,14 @@
  * Central runtime configuration helpers for environment-based mode.
  *
  * Definitions:
- * - Mock mode: REACT_APP_USE_MOCK === 'true' (loads from in-browser mocks)
- * - Dataverse enabled: REACT_APP_ENABLE_DATAVERSE === 'true' and URL is set
- * - Live mode: not mock AND Dataverse enabled
+ * - SQLite mode: REACT_APP_ENABLE_SQLITE === 'true' and API base is set
+ * - SharePoint Lists mode: REACT_APP_ENABLE_SP_LISTS === 'true' and site ID is set
  */
-export const isMockMode = (): boolean => (process.env.REACT_APP_USE_MOCK === 'true');
 
-export const isDataverseEnabled = (): boolean => (
-  process.env.REACT_APP_ENABLE_DATAVERSE === 'true' && !!process.env.REACT_APP_DATAVERSE_URL
+export const isSQLiteEnabled = (): boolean => (
+  process.env.REACT_APP_ENABLE_SQLITE === 'true' && !!process.env.REACT_APP_API_BASE
 );
 
-export const isLiveMode = (): boolean => (!isMockMode() && isDataverseEnabled());
+export const isSharePointListsEnabled = (): boolean => (
+  process.env.REACT_APP_ENABLE_SP_LISTS === 'true' && !!process.env.REACT_APP_SP_SITE_ID
+);
