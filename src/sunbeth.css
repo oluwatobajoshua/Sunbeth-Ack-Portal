@@ -464,3 +464,48 @@ footer {
 :root[data-theme='dark'] .doc-icon { background: linear-gradient(180deg, #1f2b27, #16201d); color: #e1e9e7; }
 
 :root[data-theme='dark'] .progressBar { background: #2a3a33; }
+
+/* ===== SweetAlert2 theming (Sunbeth) ===== */
+.swal2-sunbeth.swal2-popup {
+  background: var(--card);
+  color: inherit;
+  border-radius: var(--radius);
+  border: var(--border);
+  box-shadow: var(--shadow);
+  font-family: var(--font);
+  padding: 18px 18px 20px;
+}
+.swal2-sunbeth-title {
+  color: var(--primary);
+  font-weight: 800;
+  font-size: 18px;
+}
+.swal2-sunbeth-body {
+  font-size: 14px;
+  color: var(--muted-2);
+}
+.swal2-sunbeth-actions { gap: 10px !important; }
+
+/* Toast variant */
+.swal2-toast-sunbeth.swal2-popup {
+  background: #111;
+  color: #fff;
+  border-radius: 10px;
+  border: none;
+  box-shadow: 0 10px 24px rgba(0,0,0,.22);
+}
+
+/* Animations */
+@keyframes swalIn { from { opacity: 0; transform: translateY(8px) scale(.98) } to { opacity: 1; transform: none } }
+@keyframes swalOut { from { opacity: 1; transform: none } to { opacity: 0; transform: translateY(8px) scale(.98) } }
+.swal2-animate-in { animation: swalIn 220ms cubic-bezier(.2,.9,.2,1); }
+.swal2-animate-out { animation: swalOut 180ms ease-in forwards; }
+
+/* Dark mode adjustments */
+:root[data-theme='dark'] .swal2-sunbeth.swal2-popup {
+  background: var(--card);
+  border: var(--border);
+  box-shadow: var(--shadow);
+}
+:root[data-theme='dark'] .swal2-sunbeth-title { color: #e6eeeb; }
+:root[data-theme='dark'] .swal2-toast-sunbeth.swal2-popup { background: #0e1412; }

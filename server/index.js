@@ -11,6 +11,25 @@ const initSqlJs = require('sql.js');
 const http = require('http');
 const https = require('https');
 
+// Permission catalog for RBAC matrix (extendable)
+const PERMISSIONS = [
+  { key: 'viewAdmin', label: 'View Admin Panel', description: 'Access the Admin route and dashboards', category: 'General' },
+  { key: 'manageSettings', label: 'Manage Settings', description: 'Change system settings in Admin', category: 'General' },
+  { key: 'viewDebugLogs', label: 'View Debug Logs', description: 'Access troubleshooting console and logs', category: 'General' },
+  { key: 'exportAnalytics', label: 'Export Analytics', description: 'Export analytics to Excel/CSV', category: 'Analytics' },
+  { key: 'viewAnalytics', label: 'View Analytics', description: 'Access analytics dashboards', category: 'Analytics' },
+  { key: 'createBatch', label: 'Create Batch', description: 'Create acknowledgement batches', category: 'Batches' },
+  { key: 'editBatch', label: 'Edit Batch', description: 'Update batch metadata and content', category: 'Batches' },
+  { key: 'deleteBatch', label: 'Delete Batch', description: 'Remove batches and related records', category: 'Batches' },
+  { key: 'manageRecipients', label: 'Manage Recipients', description: 'Add/remove batch recipients', category: 'Batches' },
+  { key: 'manageDocuments', label: 'Manage Documents', description: 'Add/remove documents in a batch', category: 'Batches' },
+  { key: 'sendNotifications', label: 'Send Notifications', description: 'Send email notifications via Graph', category: 'Communications' },
+  { key: 'uploadDocuments', label: 'Upload Documents', description: 'Upload to SharePoint libraries', category: 'Content' },
+  { key: 'manageBusinesses', label: 'Manage Businesses', description: 'Create/edit/delete businesses', category: 'Data' },
+  { key: 'manageRoles', label: 'Manage Roles', description: 'Add/remove Admins and Managers', category: 'Security' },
+  { key: 'managePermissions', label: 'Manage Permissions', description: 'Edit RBAC matrix (role/user overrides)', category: 'Security' }
+];
+
 // Enhanced logging utility for batch operations
 const createLogger = (requestId) => {
   const log = (level, operation, message, data = null) => {
@@ -79,6 +98,64 @@ async function start() {
 
   // Attempt lightweight migrations for existing databases
   try { migrateSchema(db); } catch (e) { console.warn('Schema migration warning (non-fatal):', e); }
+
+  // Seed DB roles from environment (.env) for Admins/Managers (idempotent)
+  try {
+    const parseList = (s) => String(s || '')
+      .split(',')
+      .map(x => String(x).trim().toLowerCase())
+      .filter(x => x && x.includes('@'));
+    const admins = parseList(process.env.REACT_APP_ADMINS);
+    const managers = parseList(process.env.REACT_APP_MANAGERS);
+    if ((admins.length + managers.length) > 0) {
+      db.run('BEGIN');
+      const now = new Date().toISOString();
+      try {
+        for (const e of admins) {
+          db.run('INSERT OR IGNORE INTO roles (email, role, createdAt) VALUES (?, ?, ?)', [e, 'Admin', now]);
+        }
+        for (const e of managers) {
+          db.run('INSERT OR IGNORE INTO roles (email, role, createdAt) VALUES (?, ?, ?)', [e, 'Manager', now]);
+        }
+        db.run('COMMIT');
+        persist(db);
+      } catch (e) {
+        try { db.run('ROLLBACK'); } catch {}
+        console.warn('Env roles seed failed (non-fatal):', e?.message || e);
+      }
+    }
+  } catch (e) {
+    console.warn('Env roles parse failed (non-fatal):', e?.message || e);
+  }
+
+  // Seed default role permissions if none exist
+  try {
+    const has = one('SELECT COUNT(*) as c FROM role_permissions')?.c || 0;
+    if (has === 0) {
+      const allowAll = (keys) => Object.fromEntries(keys.map(k => [k, 1]));
+      const denyAll = (keys) => Object.fromEntries(keys.map(k => [k, 0]));
+      const keys = PERMISSIONS.map(p => p.key);
+      const adminDefaults = allowAll(keys);
+      // Manager defaults: allow most, restrict destructive and security
+      const managerDefaults = allowAll(keys);
+      for (const k of ['deleteBatch','manageRoles','managePermissions','manageSettings','viewDebugLogs','manageBusinesses']) managerDefaults[k] = 0;
+      const employeeDefaults = denyAll(keys);
+      const seedRole = (role, mapping) => {
+        for (const k of keys) {
+          const v = mapping[k] ? 1 : 0;
+          db.run('INSERT OR IGNORE INTO role_permissions (role, permKey, value) VALUES (?, ?, ?)', [role, k, v]);
+        }
+      };
+      db.run('BEGIN');
+      try {
+        seedRole('Admin', adminDefaults);
+        seedRole('Manager', managerDefaults);
+        seedRole('Employee', employeeDefaults);
+        db.run('COMMIT');
+        persist(db);
+      } catch (e) { try { db.run('ROLLBACK'); } catch {} }
+    }
+  } catch (e) { console.warn('Default role-permissions seed failed (non-fatal):', e?.message || e); }
 
   const app = express();
   app.use(cors());
@@ -152,6 +229,88 @@ async function start() {
   } catch (e) { console.warn('Business seed check failed (non-fatal):', e); }
 
   // Routes
+  // RBAC: permissions catalog
+  app.get('/api/rbac/permissions', (_req, res) => {
+    res.json(PERMISSIONS);
+  });
+  // RBAC: role permissions (get)
+  app.get('/api/rbac/role-permissions', (req, res) => {
+    const role = (req.query.role || '').toString();
+    const rows = role
+      ? all('SELECT role, permKey, value FROM role_permissions WHERE role=?', [role])
+      : all('SELECT role, permKey, value FROM role_permissions');
+    res.json(rows.map(r => ({ role: r.role, permKey: r.permKey, value: !!r.value })));
+  });
+  // RBAC: role permissions (set mapping for a role)
+  app.put('/api/rbac/role-permissions', (req, res) => {
+    try {
+      const { role, mapping } = req.body || {};
+      if (!role || typeof mapping !== 'object') return res.status(400).json({ error: 'invalid_payload' });
+      db.run('BEGIN');
+      try {
+        // Upsert each perm
+        for (const p of PERMISSIONS) {
+          if (!(p.key in mapping)) continue;
+          const val = mapping[p.key] ? 1 : 0;
+          db.run('INSERT INTO role_permissions (role, permKey, value) VALUES (?, ?, ?) ON CONFLICT(LOWER(role), permKey) DO UPDATE SET value=excluded.value', [role, p.key, val]);
+        }
+        db.run('COMMIT'); persist(db);
+        res.json({ ok: true });
+      } catch (e) { try { db.run('ROLLBACK'); } catch {}; throw e; }
+    } catch (e) { console.error('role-permissions update failed', e); res.status(500).json({ error: 'update_failed' }); }
+  });
+  // RBAC: user permissions (get)
+  app.get('/api/rbac/user-permissions', (req, res) => {
+    const email = (req.query.email || '').toString().trim().toLowerCase();
+    const rows = email
+      ? all('SELECT email, permKey, value FROM user_permissions WHERE LOWER(email)=LOWER(?)', [email])
+      : all('SELECT email, permKey, value FROM user_permissions');
+    res.json(rows.map(r => ({ email: (r.email || '').toLowerCase(), permKey: r.permKey, value: !!r.value })));
+  });
+  // RBAC: user permissions (set mapping for a user)
+  app.put('/api/rbac/user-permissions', (req, res) => {
+    try {
+      const { email, mapping } = req.body || {};
+      const e = String(email || '').trim().toLowerCase();
+      if (!e || !e.includes('@') || typeof mapping !== 'object') return res.status(400).json({ error: 'invalid_payload' });
+      db.run('BEGIN');
+      try {
+        for (const p of PERMISSIONS) {
+          if (!(p.key in mapping)) continue;
+          const val = mapping[p.key] ? 1 : 0;
+          db.run('INSERT INTO user_permissions (email, permKey, value) VALUES (?, ?, ?) ON CONFLICT(LOWER(email), permKey) DO UPDATE SET value=excluded.value', [e, p.key, val]);
+        }
+        db.run('COMMIT'); persist(db);
+        res.json({ ok: true });
+      } catch (e) { try { db.run('ROLLBACK'); } catch {}; throw e; }
+    } catch (e) { console.error('user-permissions update failed', e); res.status(500).json({ error: 'update_failed' }); }
+  });
+  // RBAC: effective permissions for a user (email required)
+  app.get('/api/rbac/effective', (req, res) => {
+    try {
+      const email = (req.query.email || '').toString().trim().toLowerCase();
+      if (!email || !email.includes('@')) return res.status(400).json({ error: 'email_required' });
+      const roles = resolveUserRoles(email, db);
+      // SuperAdmin shortcut: everything true
+      const effective = {};
+      for (const p of PERMISSIONS) effective[p.key] = false;
+      if (roles.includes('SuperAdmin')) {
+        for (const p of PERMISSIONS) effective[p.key] = true;
+        return res.json({ roles, permissions: effective });
+      }
+      // Apply role defaults/mapping
+      const roleRows = all('SELECT role, permKey, value FROM role_permissions WHERE LOWER(role) IN (' + roles.map(() => 'LOWER(?)').join(',') + ')', roles);
+      for (const r of roleRows) {
+        effective[r.permKey] = effective[r.permKey] || !!r.value; // OR semantics across roles
+      }
+      // Apply user overrides (can set true/false explicitly)
+      const userRows = all('SELECT permKey, value FROM user_permissions WHERE LOWER(email)=LOWER(?)', [email]);
+      for (const u of userRows) {
+        effective[u.permKey] = !!u.value;
+      }
+      res.json({ roles, permissions: effective });
+    } catch (e) { console.error('effective perms failed', e); res.status(500).json({ error: 'failed' }); }
+  });
   // Health
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
   // Root helper
@@ -473,6 +632,7 @@ async function start() {
       const qToken = (req.query.token || '').toString();
       const hdrAuth = (req.headers['authorization'] || '').toString();
       const bearer = qToken ? `Bearer ${qToken}` : (hdrAuth && /^Bearer\s+/i.test(hdrAuth) ? hdrAuth : '');
+      const download = (req.query.download || '').toString() === '1';
       if (!bearer) return res.status(401).json({ error: 'token_required' });
 
       let url;
@@ -487,16 +647,69 @@ async function start() {
         return res.status(400).json({ error: 'missing_ids_or_url' });
       }
 
-      const r = https.request(url, { method: 'GET', headers: { 'Authorization': bearer, 'User-Agent': 'Sunbeth-Graph-Proxy/1.0' } }, (upstream) => {
-        // Forward content type and stream
-        const ct = upstream.headers['content-type'] || 'application/octet-stream';
-        res.setHeader('Content-Type', ct);
-        res.setHeader('Cache-Control', 'no-store');
-        upstream.on('error', () => { try { res.destroy(); } catch {} });
-        upstream.pipe(res);
-      });
-      r.on('error', () => { if (!res.headersSent) res.status(502).json({ error: 'upstream_error' }); else try { res.destroy(); } catch {} });
-      r.end();
+      const follow = (targetUrl, redirects = 0) => {
+        const opts = { method: 'GET', headers: { 'Authorization': bearer, 'User-Agent': 'Sunbeth-Graph-Proxy/1.0' } };
+        const r = https.request(targetUrl, opts, (upstream) => {
+          // Handle Graph 302 redirect to a pre-authenticated blob URL
+          if (upstream.statusCode >= 300 && upstream.statusCode < 400 && upstream.headers.location && redirects < 3) {
+            try {
+              const next = new URL(upstream.headers.location, targetUrl);
+              const client = next.protocol === 'https:' ? https : http;
+              const r2 = client.request(next, { method: 'GET', headers: { 'User-Agent': 'Sunbeth-Graph-Proxy/1.0' } }, (up2) => {
+                const ct2 = up2.headers['content-type'] || 'application/octet-stream';
+                res.setHeader('Content-Type', ct2);
+                res.setHeader('Cache-Control', 'no-store');
+                if (download) {
+                  try {
+                    const cd = up2.headers['content-disposition'];
+                    let name = null;
+                    if (cd && /filename\*=utf-8''([^;]+)|filename="?([^";]+)"?/i.test(String(cd))) {
+                      const m = String(cd).match(/filename\*=utf-8''([^;]+)|filename="?([^";]+)"?/i);
+                      name = decodeURIComponent(m[1] || m[2] || 'file');
+                    }
+                    if (!name) {
+                      const candidate = decodeURIComponent((next.pathname || '').split('/').pop() || '').trim();
+                      name = candidate && candidate !== 'content' ? candidate : 'document';
+                    }
+                    // If we know it's a PDF and there's no extension, add .pdf for better UX
+                    if (/application\/pdf/i.test(ct2) && !/\.pdf$/i.test(name)) name = `${name}.pdf`;
+                    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+                  } catch {}
+                }
+                up2.on('error', () => { try { res.destroy(); } catch {} });
+                up2.pipe(res);
+              });
+              r2.on('error', () => { if (!res.headersSent) res.status(502).json({ error: 'upstream_error' }); else try { res.destroy(); } catch {} });
+              r2.end();
+              return;
+            } catch {
+              return res.status(502).json({ error: 'redirect_failed' });
+            }
+          }
+          // No redirect: stream as-is
+          const ct = upstream.headers['content-type'] || 'application/octet-stream';
+          res.setHeader('Content-Type', ct);
+          res.setHeader('Cache-Control', 'no-store');
+          if (download) {
+            try {
+              const cd = upstream.headers['content-disposition'];
+              let name = null;
+              if (cd && /filename\*=utf-8''([^;]+)|filename="?([^";]+)"?/i.test(String(cd))) {
+                const m = String(cd).match(/filename\*=utf-8''([^;]+)|filename="?([^";]+)"?/i);
+                name = decodeURIComponent(m[1] || m[2] || 'file');
+              }
+              if (!name) name = 'document';
+              if (/application\/pdf/i.test(ct) && !/\.pdf$/i.test(name)) name = `${name}.pdf`;
+              res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+            } catch {}
+          }
+          upstream.on('error', () => { try { res.destroy(); } catch {} });
+          upstream.pipe(res);
+        });
+        r.on('error', () => { if (!res.headersSent) res.status(502).json({ error: 'upstream_error' }); else try { res.destroy(); } catch {} });
+        r.end();
+      };
+      follow(url);
     } catch (e) {
       console.error('Graph proxy error', e);
       res.status(500).json({ error: 'proxy_failed' });
@@ -589,6 +802,57 @@ async function start() {
     const id = Number(req.params.id);
     const rows = all('SELECT id, batchId, businessId, user, email, displayName, department, jobTitle, location, primaryGroup FROM recipients WHERE batchId=? ORDER BY id DESC', [id]);
     res.json(rows);
+  });
+
+  // Completion status for all recipients in a batch
+  // Returns [{ email, displayName, department, jobTitle, location, primaryGroup, businessId, businessName, acknowledged, total, completed, completionAt }]
+  app.get('/api/batches/:id/completions', (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid_batch_id' });
+      const totalRow = one('SELECT COUNT(*) as c FROM documents WHERE batchId=?', [id]);
+      const total = totalRow?.c || 0;
+      if (total === 0) return res.json([]);
+
+      const rows = all(
+        `SELECT LOWER(r.email) as email,
+                COALESCE(r.displayName, r.email) as displayName,
+                r.department, r.jobTitle, r.location, r.primaryGroup,
+                r.businessId,
+                b.name as businessName,
+                COUNT(CASE WHEN a.acknowledged=1 THEN 1 END) as acknowledged,
+                MAX(a.ackDate) as lastAckDate
+         FROM recipients r
+         LEFT JOIN acks a ON a.batchId=r.batchId AND LOWER(a.email)=LOWER(r.email)
+         LEFT JOIN businesses b ON b.id=r.businessId
+         WHERE r.batchId=?
+         GROUP BY LOWER(r.email), r.displayName, r.department, r.jobTitle, r.location, r.primaryGroup, r.businessId, b.name`,
+        [id]
+      );
+      const mapped = rows.map(r => {
+        const acknowledged = Number(r.acknowledged) || 0;
+        const completed = acknowledged >= total;
+        const completionAt = completed ? (r.lastAckDate || null) : null;
+        return {
+          email: String(r.email || ''),
+          displayName: r.displayName || r.email || '',
+          department: r.department || null,
+          jobTitle: r.jobTitle || null,
+          location: r.location || null,
+          primaryGroup: r.primaryGroup || null,
+          businessId: r.businessId != null ? Number(r.businessId) : null,
+          businessName: r.businessName || null,
+          acknowledged,
+          total,
+          completed,
+          completionAt
+        };
+      });
+      res.json(mapped);
+    } catch (e) {
+      console.error('completions endpoint failed', e);
+      res.status(500).json({ error: 'completions_failed' });
+    }
   });
 
   // Acked doc ids for user
@@ -696,6 +960,102 @@ async function start() {
         stack: error.stack
       });
       res.status(500).json({ error: 'internal_error', message: 'An unexpected error occurred during batch creation' });
+    }
+  });
+
+  // Admin: create batch WITH documents and recipients atomically
+  app.post('/api/batches/full', (req, res) => {
+    const { logger } = req;
+    try {
+      logger.info('batch-full-create', 'Starting full batch creation process');
+
+      const body = req.body || {};
+      const { name, startDate = null, dueDate = null, description = null, status = 1 } = body.batch || body;
+      const documents = Array.isArray(body.documents) ? body.documents : [];
+      const recipients = Array.isArray(body.recipients) ? body.recipients : [];
+
+      // Validate batch
+      if (!name || typeof name !== 'string' || !name.trim()) {
+        logger.error('batch-full-create', 'Validation failed: name is required', { providedName: name });
+        return res.status(400).json({ error: 'name_required', message: 'Batch name is required and must be a non-empty string' });
+      }
+      const trimmedName = name.trim();
+      const finalStartDate = (startDate === '' || startDate === null) ? null : startDate;
+      const finalDueDate = (dueDate === '' || dueDate === null) ? null : dueDate;
+      const finalDescription = (description === '' || description === null) ? null : description;
+      const finalStatus = Number.isInteger(status) ? status : 1;
+
+      // Enforce at least one document and one recipient when creating
+      if (documents.length === 0) {
+        logger.warn('batch-full-create', 'No documents provided in full create');
+        return res.status(400).json({ error: 'documents_required', message: 'At least one document is required to create a batch' });
+      }
+      if (recipients.length === 0) {
+        logger.warn('batch-full-create', 'No recipients provided in full create');
+        return res.status(400).json({ error: 'recipients_required', message: 'At least one recipient is required to create a batch' });
+      }
+
+      // Begin transaction
+      logger.debug('batch-full-create', 'Beginning DB transaction');
+      db.run('BEGIN');
+      let newBatchId = null;
+      let docsInserted = 0;
+      let recsInserted = 0;
+
+      try {
+        // Insert batch
+        db.run('INSERT INTO batches (name, startDate, dueDate, status, description) VALUES (?, ?, ?, ?, ?)',
+          [trimmedName, finalStartDate, finalDueDate, finalStatus, finalDescription]);
+        const idRow = one('SELECT last_insert_rowid() as id');
+        newBatchId = idRow?.id;
+        if (!newBatchId) throw new Error('failed_to_create_batch');
+
+        // Insert documents
+        for (let i = 0; i < documents.length; i++) {
+          const d = documents[i] || {};
+          const { title, url, version = 1, requiresSignature = 0, driveId = null, itemId = null, source = null } = d;
+          if (!title || !url) continue;
+          db.run('INSERT OR IGNORE INTO documents (batchId, title, url, version, requiresSignature, driveId, itemId, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [newBatchId, String(title), String(url), Number(version) || 1, requiresSignature ? 1 : 0, driveId, itemId, source]);
+          docsInserted++;
+        }
+
+        // Insert recipients
+        const processedEmails = new Set();
+        for (let i = 0; i < recipients.length; i++) {
+          const r = recipients[i] || {};
+          const { businessId = null, user = null, email = null, displayName = null, department = null, jobTitle = null, location = null, primaryGroup = null } = r;
+          const emailLower = String(email || user || '').trim().toLowerCase();
+          if (!emailLower || !emailLower.includes('@') || emailLower.length < 5) continue;
+          if (processedEmails.has(emailLower)) continue;
+          processedEmails.add(emailLower);
+          db.run(`INSERT OR IGNORE INTO recipients (batchId, businessId, user, email, displayName, department, jobTitle, location, primaryGroup)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [newBatchId, businessId, emailLower, emailLower, displayName, department, jobTitle, location, primaryGroup]);
+          recsInserted++;
+        }
+
+        // Ensure we created relations
+        if (docsInserted === 0) throw new Error('no_documents_created');
+        if (recsInserted === 0) throw new Error('no_recipients_created');
+
+        // Commit
+        db.run('COMMIT');
+        persist(db);
+        logger.info('batch-full-create', 'Full batch creation successful', { batchId: newBatchId, docsInserted, recsInserted });
+        return res.json({ id: newBatchId, batchId: newBatchId, documentsInserted: docsInserted, recipientsInserted: recsInserted });
+      } catch (txErr) {
+        // Rollback on any error
+        try { db.run('ROLLBACK'); } catch {}
+        logger.error('batch-full-create', 'Transaction failed, rolled back', { error: txErr?.message || String(txErr) });
+        const code = (txErr?.message === 'no_documents_created') ? 400
+                  : (txErr?.message === 'no_recipients_created') ? 400
+                  : 500;
+        return res.status(code).json({ error: txErr?.message || 'tx_failed' });
+      }
+    } catch (error) {
+      logger.error('batch-full-create', 'Unexpected error during full batch creation', { error: error?.message || String(error) });
+      return res.status(500).json({ error: 'internal_error' });
     }
   });
 
@@ -1038,6 +1398,50 @@ async function start() {
     }
   });
 
+  // Roles management API
+  // List roles
+  app.get('/api/roles', (_req, res) => {
+    try {
+      const rows = all('SELECT id, email, role, createdAt FROM roles ORDER BY role, LOWER(email)');
+      res.json(rows.map(r => ({ id: r.id, email: String(r.email).toLowerCase(), role: String(r.role), createdAt: r.createdAt })));
+    } catch (e) {
+      console.error('List roles failed', e);
+      res.status(500).json({ error: 'list_failed' });
+    }
+  });
+  // Create role
+  app.post('/api/roles', (req, res) => {
+    try {
+      const { email, role } = req.body || {};
+      const e = String(email || '').trim().toLowerCase();
+      const r = String(role || '').trim();
+      if (!e || !e.includes('@')) return res.status(400).json({ error: 'invalid_email' });
+      // Allow only Admin or Manager via API to avoid accidental grant of SuperAdmin; env remains authoritative for SuperAdmin
+      if (!['Admin','Manager'].includes(r)) return res.status(400).json({ error: 'invalid_role' });
+      const now = new Date().toISOString();
+      const ok = exec('INSERT OR IGNORE INTO roles (email, role, createdAt) VALUES (?, ?, ?)', [e, r, now]);
+      if (!ok) return res.status(400).json({ error: 'insert_failed' });
+      const id = one('SELECT last_insert_rowid() as id')?.id;
+      res.json({ id, email: e, role: r, createdAt: now });
+    } catch (e) {
+      console.error('Create role failed', e);
+      res.status(500).json({ error: 'insert_failed' });
+    }
+  });
+  // Delete role
+  app.delete('/api/roles/:id', (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid_id' });
+      const ok = exec('DELETE FROM roles WHERE id=?', [id]);
+      if (!ok) return res.status(400).json({ error: 'delete_failed' });
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('Delete role failed', e);
+      res.status(500).json({ error: 'delete_failed' });
+    }
+  });
+
   // Acknowledge a document
   app.post('/api/ack', (req, res) => {
     const { batchId, documentId, email } = req.body || {};
@@ -1167,6 +1571,31 @@ function bootstrapSchema(db) {
   db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_recipients_batch_email ON recipients(batchId, LOWER(email));`);
   db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_documents_batch_url ON documents(batchId, url);`);
 
+  // Roles table for RBAC overrides (DB-managed roles)
+  db.run(`CREATE TABLE IF NOT EXISTS roles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    role TEXT NOT NULL,
+    createdAt TEXT
+  );`);
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_roles_email_role ON roles(LOWER(email), role);`);
+
+  // Role-based and user-based permissions
+  db.run(`CREATE TABLE IF NOT EXISTS role_permissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL,
+    permKey TEXT NOT NULL,
+    value INTEGER NOT NULL DEFAULT 1
+  );`);
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_role_perm ON role_permissions(LOWER(role), permKey);`);
+  db.run(`CREATE TABLE IF NOT EXISTS user_permissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    permKey TEXT NOT NULL,
+    value INTEGER NOT NULL DEFAULT 1
+  );`);
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_user_perm ON user_permissions(LOWER(email), permKey);`);
+
   // Seed a default business for convenience
   db.run("INSERT INTO businesses (name, code, isActive, description) VALUES ('Default Business', 'DEF', 1, 'Auto-created')");
 }
@@ -1176,12 +1605,50 @@ function migrateSchema(db) {
   try { db.run("ALTER TABLE documents ADD COLUMN driveId TEXT"); } catch {}
   try { db.run("ALTER TABLE documents ADD COLUMN itemId TEXT"); } catch {}
   try { db.run("ALTER TABLE documents ADD COLUMN source TEXT"); } catch {}
+  // roles table added in later versions
+  try { db.run(`CREATE TABLE IF NOT EXISTS roles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    role TEXT NOT NULL,
+    createdAt TEXT
+  );`); } catch {}
+  try { db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_roles_email_role ON roles(LOWER(email), role);`); } catch {}
+  // Permissions tables
+  try { db.run(`CREATE TABLE IF NOT EXISTS role_permissions (id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, permKey TEXT NOT NULL, value INTEGER NOT NULL DEFAULT 1);`); } catch {}
+  try { db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_role_perm ON role_permissions(LOWER(role), permKey);`); } catch {}
+  try { db.run(`CREATE TABLE IF NOT EXISTS user_permissions (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, permKey TEXT NOT NULL, value INTEGER NOT NULL DEFAULT 1);`); } catch {}
+  try { db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_user_perm ON user_permissions(LOWER(email), permKey);`); } catch {}
 }
 
 function persist(db) {
   const data = db.export();
   const buffer = Buffer.from(data);
   fs.writeFileSync(DB_PATH, buffer);
+}
+
+// Resolve user roles using DB roles and environment. Groups not evaluated server-side.
+function resolveUserRoles(email, db) {
+  const e = String(email || '').trim().toLowerCase();
+  const roles = ['Employee'];
+  try {
+    const envList = (s) => String(s || '')
+      .split(',')
+      .map(x => String(x).trim().toLowerCase())
+      .filter(x => x && x.includes('@'));
+    const superAdmins = envList(process.env.REACT_APP_SUPER_ADMINS);
+    if (superAdmins.includes(e)) roles.push('SuperAdmin');
+  } catch {}
+  try {
+    const rows = db ? db.prepare && db : null;
+    const fromDb = (() => {
+      try { return (db ? (function(){ const rows = []; const stmt = db.prepare('SELECT role FROM roles WHERE LOWER(email)=LOWER(?)'); try { stmt.bind([e]); while (stmt.step()) rows.push(stmt.getAsObject()); } finally { stmt.free(); } return rows; })() : []); } catch { return []; }
+    })();
+    for (const r of fromDb) {
+      const role = String(r.role);
+      if (!roles.includes(role)) roles.push(role);
+    }
+  } catch {}
+  return roles;
 }
 
 start().catch(err => {

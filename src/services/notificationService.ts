@@ -11,8 +11,10 @@
  *   Teams DM (optional): Chat.ReadWrite
  */
 import { getGraphToken } from './authTokens';
+import { getBrandLogoUrl, getBrandName, getBrandPrimaryColor } from '../utils/runtimeConfig';
 
 type Recipient = { address: string; name?: string };
+type MailOptions = { cc?: Recipient[]; bcc?: Recipient[] };
 
 const chunk = <T,>(arr: T[], size: number): T[][] => {
   const out: T[][] = [];
@@ -27,7 +29,9 @@ const chunk = <T,>(arr: T[], size: number): T[][] => {
 export const sendEmail = async (
   recipients: Recipient[],
   subject: string,
-  htmlBody: string
+  htmlBody: string,
+  attachments?: Array<{ name: string; contentBytes: string; contentType?: string }>,
+  options?: MailOptions
 ): Promise<void> => {
   if (!recipients || recipients.length === 0) return;
   const token = await getGraphToken(['Mail.Send']);
@@ -38,7 +42,15 @@ export const sendEmail = async (
       message: {
         subject,
         body: { contentType: 'HTML', content: htmlBody },
-        toRecipients: part.map(r => ({ emailAddress: { address: r.address, name: r.name || r.address } }))
+        toRecipients: part.map(r => ({ emailAddress: { address: r.address, name: r.name || r.address } })),
+        ccRecipients: (options?.cc && options.cc.length > 0) ? options.cc.map(r => ({ emailAddress: { address: r.address, name: r.name || r.address } })) : undefined,
+        bccRecipients: (options?.bcc && options.bcc.length > 0) ? options.bcc.map(r => ({ emailAddress: { address: r.address, name: r.name || r.address } })) : undefined,
+        attachments: (attachments && attachments.length > 0) ? attachments.map(a => ({
+          '@odata.type': '#microsoft.graph.fileAttachment',
+          name: a.name,
+          contentType: a.contentType || 'application/octet-stream',
+          contentBytes: a.contentBytes
+        })) : undefined
       },
       saveToSentItems: true
     };
@@ -54,6 +66,60 @@ export const sendEmail = async (
       const text = await res.text().catch(() => '');
       throw new Error(`sendMail failed: ${res.status} ${res.statusText} — ${text}`);
     }
+  }
+};
+
+/**
+ * Send an email and automatically split attachments across multiple messages when
+ * the total size or attachment count risks hitting Graph/Exchange limits.
+ * - Conservative caps: max 8 attachments or ~15 MB total per message
+ * - Messages are labeled with “(part i of n)” when chunked
+ */
+export const sendEmailWithAttachmentChunks = async (
+  recipients: Recipient[],
+  subject: string,
+  htmlBody: string,
+  attachments?: Array<{ name: string; contentBytes: string; contentType?: string }>,
+  options?: MailOptions
+): Promise<void> => {
+  const MAX_ATTACHMENTS = 8;
+  const MAX_TOTAL_BYTES = 15 * 1024 * 1024; // ~15 MB per message (conservative)
+
+  if (!attachments || attachments.length === 0) {
+    await sendEmail(recipients, subject, htmlBody, undefined, options);
+    return;
+  }
+
+  // Helper to estimate decoded byte size from base64
+  const sizeOf = (b64: string) => Math.floor((b64.length * 3) / 4);
+
+  const chunks: Array<typeof attachments> = [];
+  let current: typeof attachments = [];
+  let currentBytes = 0;
+  for (const a of attachments) {
+    const aBytes = sizeOf(a.contentBytes || '');
+    const wouldExceed = current.length + 1 > MAX_ATTACHMENTS || (currentBytes + aBytes) > MAX_TOTAL_BYTES;
+    if (wouldExceed && current.length > 0) {
+      chunks.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(a);
+    currentBytes += aBytes;
+  }
+  if (current.length > 0) chunks.push(current);
+
+  if (chunks.length === 1) {
+    await sendEmail(recipients, subject, htmlBody, chunks[0], options);
+    return;
+  }
+
+  // Multiple parts
+  for (let i = 0; i < chunks.length; i++) {
+    const part = chunks[i]!;
+    const partSubject = `${subject} (part ${i + 1} of ${chunks.length})`;
+    const partBody = `${htmlBody}<div style="margin-top:12px;color:#666;font-size:12px">Attachments: part ${i + 1} of ${chunks.length}</div>`;
+    await sendEmail(recipients, partSubject, partBody, part, options);
   }
 };
 
@@ -106,22 +172,154 @@ export const buildBatchEmail = (opts: {
   dueDate?: string;
   description?: string;
 }): { subject: string; bodyHtml: string } => {
-  const subject = `New Acknowledgement Assigned: ${opts.batchName}`;
+  const brand = getBrandName();
+  const logo = getBrandLogoUrl();
+  const primary = getBrandPrimaryColor();
+  const subject = `Action required: ${opts.batchName}`;
   const bodyHtml = `
-    <div style="font-family:Segoe UI,Tahoma,Arial,sans-serif;font-size:14px;color:#111">
-      <p>Hello,</p>
-      <p>You have been assigned a new acknowledgement batch: <strong>${opts.batchName}</strong>.</p>
-      ${opts.description ? `<p>${opts.description}</p>` : ''}
-      <ul>
-        ${opts.startDate ? `<li><strong>Start:</strong> ${new Date(opts.startDate).toLocaleDateString()}</li>` : ''}
-        ${opts.dueDate ? `<li><strong>Due:</strong> ${new Date(opts.dueDate).toLocaleDateString()}</li>` : ''}
-      </ul>
-      <p>
-        Please open the portal to review and acknowledge the assigned documents:<br/>
-        <a href="${opts.appUrl}" target="_blank" rel="noopener">Open Sunbeth Acknowledgement Portal</a>
-      </p>
-      <p style="color:#666">This message was sent via Microsoft Graph. Do not reply.</p>
-    </div>
-  `;
+    <div style="background:#f7f8fa;padding:24px">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #e9ecef;border-radius:10px;overflow:hidden">
+        <tr>
+          <td style="padding:16px 20px;border-bottom:1px solid #e9ecef;background:${primary};color:white">
+            <div style="display:flex;align-items:center;gap:12px">
+              ${logo ? `<img src="${logo}" alt="${brand}" style="height:28px;display:block;border:0"/>` : ''}
+              <strong style="font-family:Segoe UI,Tahoma,Arial,sans-serif;font-size:16px;line-height:1">${brand}</strong>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 20px 8px 20px;font-family:Segoe UI,Tahoma,Arial,sans-serif;color:#111">
+            <h2 style="margin:0 0 12px 0;font-size:18px;color:#111">New acknowledgement assigned</h2>
+            <p style="margin:0 0 12px 0">You have been assigned: <strong>${opts.batchName}</strong>.</p>
+            ${opts.description ? `<p style="margin:0 0 12px 0;color:#444">${opts.description}</p>` : ''}
+            <table role="presentation" cellpadding="0" cellspacing="0" style="margin:12px 0;color:#333">
+              ${opts.startDate ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Start:</td><td style="padding:4px 0"><strong>${new Date(opts.startDate).toLocaleDateString()}</strong></td></tr>` : ''}
+              ${opts.dueDate ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Due:</td><td style="padding:4px 0"><strong>${new Date(opts.dueDate).toLocaleDateString()}</strong></td></tr>` : ''}
+            </table>
+            <p style="margin:16px 0 0 0">
+              <a href="${opts.appUrl}" target="_blank" rel="noopener" style="display:inline-block;background:${primary};color:#fff;text-decoration:none;padding:10px 14px;border-radius:6px;font-weight:600">Open Acknowledgement Portal</a>
+            </p>
+            <p style="margin:16px 0 0 0;color:#666;font-size:12px">If the button doesn’t work, copy and paste this link into your browser:<br/><span style="word-break:break-all;color:#555">${opts.appUrl}</span></p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:16px 20px;border-top:1px solid #e9ecef;background:#fafbfc;color:#666;font-family:Segoe UI,Tahoma,Arial,sans-serif;font-size:12px">
+            <div>This message was sent by ${brand} via Microsoft Graph.</div>
+            <div>Please do not reply to this automated notification.</div>
+          </td>
+        </tr>
+      </table>
+    </div>`;
+  return { subject, bodyHtml };
+};
+
+/**
+ * Build a simple batch completion email for HR/admins
+ */
+export const buildBatchCompletionEmail = (opts: {
+  appUrl: string;
+  batchName: string;
+  completedOn?: string;
+  totalRecipients?: number;
+  totalDocuments?: number;
+}): { subject: string; bodyHtml: string } => {
+  const brand = getBrandName();
+  const logo = getBrandLogoUrl();
+  const primary = getBrandPrimaryColor();
+  const subject = `Completed: ${opts.batchName}`;
+  const bodyHtml = `
+    <div style="background:#f7f8fa;padding:24px">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #e9ecef;border-radius:10px;overflow:hidden">
+        <tr>
+          <td style="padding:16px 20px;border-bottom:1px solid #e9ecef;background:${primary};color:white">
+            <div style="display:flex;align-items:center;gap:12px">
+              ${logo ? `<img src="${logo}" alt="${brand}" style="height:28px;display:block;border:0"/>` : ''}
+              <strong style="font-family:Segoe UI,Tahoma,Arial,sans-serif;font-size:16px;line-height:1">${brand}</strong>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px;font-family:Segoe UI,Tahoma,Arial,sans-serif;color:#111">
+            <h2 style="margin:0 0 12px 0;font-size:18px;color:#111">Batch completed</h2>
+            <p style="margin:0 0 12px 0">The batch <strong>${opts.batchName}</strong> has been fully acknowledged.</p>
+            <ul style="margin:0 0 12px 18px;color:#333">
+              ${opts.totalRecipients != null ? `<li><strong>Recipients:</strong> ${opts.totalRecipients}</li>` : ''}
+              ${opts.totalDocuments != null ? `<li><strong>Documents per recipient:</strong> ${opts.totalDocuments}</li>` : ''}
+              ${opts.completedOn ? `<li><strong>Completed on:</strong> ${new Date(opts.completedOn).toLocaleString()}</li>` : ''}
+            </ul>
+            <p style="margin:16px 0 0 0">
+              <a href="${opts.appUrl}" target="_blank" rel="noopener" style="display:inline-block;background:${primary};color:#fff;text-decoration:none;padding:10px 14px;border-radius:6px;font-weight:600">Open Portal</a>
+            </p>
+          </td>
+        </tr>
+      </table>
+    </div>`;
+  return { subject, bodyHtml };
+};
+
+/**
+ * Helper: fetch a URL (same-origin or via proxy) and return base64 content for Graph fileAttachment
+ */
+export const fetchAsBase64 = async (url: string): Promise<{ contentBytes: string; contentType?: string }> => {
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${res.statusText}`);
+  const ct = res.headers.get('content-type') || undefined;
+  const buf = await res.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const contentBytes = btoa(binary);
+  return { contentBytes, contentType: ct };
+};
+
+/** Build completion email for a single user's completion of a batch */
+export const buildUserCompletionEmail = (opts: {
+  appUrl: string;
+  batchName: string;
+  userEmail: string;
+  userName?: string;
+  completedOn?: string;
+  totalDocuments?: number;
+  department?: string;
+  jobTitle?: string;
+  location?: string;
+  businessName?: string;
+  primaryGroup?: string;
+}): { subject: string; bodyHtml: string } => {
+  const brand = getBrandName();
+  const logo = getBrandLogoUrl();
+  const primary = getBrandPrimaryColor();
+  const subject = `Completed by ${opts.userName || opts.userEmail}: ${opts.batchName}`;
+  const bodyHtml = `
+    <div style="background:#f7f8fa;padding:24px">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #e9ecef;border-radius:10px;overflow:hidden">
+        <tr>
+          <td style="padding:16px 20px;border-bottom:1px solid #e9ecef;background:${primary};color:white">
+            <div style="display:flex;align-items:center;gap:12px">
+              ${logo ? `<img src="${logo}" alt="${brand}" style="height:28px;display:block;border:0"/>` : ''}
+              <strong style="font-family:Segoe UI,Tahoma,Arial,sans-serif;font-size:16px;line-height:1">${brand}</strong>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px;font-family:Segoe UI,Tahoma,Arial,sans-serif;color:#111">
+            <h2 style="margin:0 0 12px 0;font-size:18px;color:#111">User completed batch</h2>
+            <p style="margin:0 0 12px 0"><strong>${opts.userName || opts.userEmail}</strong> (${opts.userEmail}) has acknowledged all documents in <strong>${opts.batchName}</strong>.</p>
+            <table role="presentation" cellpadding="0" cellspacing="0" style="margin:8px 0;color:#333">
+              ${opts.completedOn ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Completed on:</td><td style="padding:4px 0"><strong>${new Date(opts.completedOn).toLocaleString()}</strong></td></tr>` : ''}
+              ${opts.totalDocuments != null ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Documents:</td><td style="padding:4px 0"><strong>${opts.totalDocuments}</strong></td></tr>` : ''}
+              ${opts.department ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Department:</td><td style="padding:4px 0">${opts.department}</td></tr>` : ''}
+              ${opts.jobTitle ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Job title:</td><td style="padding:4px 0">${opts.jobTitle}</td></tr>` : ''}
+              ${opts.location ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Location:</td><td style="padding:4px 0">${opts.location}</td></tr>` : ''}
+              ${opts.businessName ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Business:</td><td style="padding:4px 0">${opts.businessName}</td></tr>` : ''}
+              ${opts.primaryGroup ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Primary group:</td><td style="padding:4px 0">${opts.primaryGroup}</td></tr>` : ''}
+            </table>
+            <p style="margin:16px 0 0 0">
+              <a href="${opts.appUrl}" target="_blank" rel="noopener" style="display:inline-block;background:${primary};color:#fff;text-decoration:none;padding:10px 14px;border-radius:6px;font-weight:600">Open Portal</a>
+            </p>
+          </td>
+        </tr>
+      </table>
+    </div>`;
   return { subject, bodyHtml };
 };

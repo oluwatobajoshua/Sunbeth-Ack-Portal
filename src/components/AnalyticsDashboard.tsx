@@ -277,6 +277,7 @@ const AnalyticsDashboard: React.FC = () => {
             documents: Array.isArray(docRes) ? docRes : []
           };
           setData(live);
+          try { (window as any).__analyticsData = { ...live, __recipients: Array.isArray(recRes) ? recRes : [] }; } catch {}
           setLoading(false);
           return;
         } catch (e) {
@@ -295,6 +296,7 @@ const AnalyticsDashboard: React.FC = () => {
         trends: [],
         documents: []
       });
+      try { (window as any).__analyticsData = null; } catch {}
       setLoading(false);
     } catch (error) {
       console.error('Failed to load analytics data:', error);
@@ -341,7 +343,7 @@ const AnalyticsDashboard: React.FC = () => {
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn ghost sm" onClick={() => loadAnalyticsData()}>🔄 Refresh</button>
           <button className="btn ghost sm">📋 Schedule Report</button>
-          <button className="btn sm">📤 Export Dashboard</button>
+          <button className="btn sm" onClick={() => exportCsv()}>📤 Export CSV</button>
         </div>
       </div>
 
@@ -510,3 +512,41 @@ const AnalyticsDashboard: React.FC = () => {
 };
 
 export default AnalyticsDashboard;
+
+// --- helpers: CSV export ---
+function toCSV(rows: any[], headers: string[]): string {
+  const esc = (v: any) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const head = headers.map(esc).join(',');
+  const body = rows.map(r => headers.map(h => esc(r[h])).join(',')).join('\n');
+  return head + '\n' + body;
+}
+
+function download(filename: string, content: string, mime = 'text/csv;charset=utf-8;') {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
+}
+
+function exportCsv(this: any) {
+  try {
+    // @ts-ignore - access component state via closure when bound
+    const data = (window as any).__analyticsData as any;
+    if (!data) { console.warn('No analytics data to export'); return; }
+    // Recipients (if present)
+    if (Array.isArray(data.__recipients) && data.__recipients.length > 0) {
+      const rows = data.__recipients.map((r: any) => ({
+        displayName: r.displayName || r.toba_DisplayName || r.email || r.toba_Email,
+        email: r.email || r.toba_Email,
+        department: r.department || r.toba_Department || '',
+        group: r.primaryGroup || r.toba_PrimaryGroup || ''
+      }));
+      const csv = toCSV(rows, ['displayName','email','department','group']);
+      download('recipients.csv', csv);
+    }
+    // Document performance
+    if (Array.isArray(data.documents) && data.documents.length > 0) {
+      const csv = toCSV(data.documents, ['documentName','batchName','totalAssigned','acknowledged','pending','avgTimeToComplete']);
+      download('documents.csv', csv);
+    }
+  } catch (e) { console.warn('CSV export failed', e); }
+}

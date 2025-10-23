@@ -35,7 +35,7 @@ const Landing: React.FC = () => {
           </div>
 
           <div className="hero-visual" style={{ display: 'flex', justifyContent: 'center' }}>
-            <img src="https://images.unsplash.com/photo-1551861564-1b6f7f6e3f0e?q=80&w=1600&auto=format&fit=crop&ixlib=rb-4.0.3&s=ae2a1a7b6c2f4a6a8f3b9f7f3a1b6e3d" alt="Employees acknowledging documents" style={{ width: '100%', maxWidth: 420, borderRadius: 10 }} />
+            <img src="/images/landing_image.png" alt="Sunbeth Document Acknowledgement" style={{ width: '100%', maxWidth: 420, borderRadius: 10, boxShadow: '0 4px 24px rgba(0,0,0,0.10)' }} />
           </div>
         </div>
       </div>

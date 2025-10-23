@@ -38,7 +38,10 @@ export interface UserSearchFilters {
 export const getUsers = async (token: string, filters?: UserSearchFilters): Promise<GraphUser[]> => {
   try {
     // Base query with reasonable page size; we will follow @odata.nextLink for pagination
-    const base = 'https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName,mail,jobTitle,department,officeLocation,businessPhones,mobilePhone&$orderby=displayName&$top=200';
+    // NOTE: Graph returns Request_UnsupportedQuery when combining sorting with certain search patterns.
+    // To avoid 400 errors, omit $orderby when a search term is used.
+    const baseNoOrder = 'https://graph.microsoft.com/v1.0/users?$select=id,displayName,userPrincipalName,mail,jobTitle,department,officeLocation,businessPhones,mobilePhone&$top=200';
+    const base = (filters?.search && filters.search.trim()) ? baseNoOrder : `${baseNoOrder}&$orderby=displayName`;
     const escapeOData = (s: string) => s.replace(/'/g, "''");
     const filterStr = filters?.search ? `(startswith(displayName,'${escapeOData(filters.search)}') or startswith(userPrincipalName,'${escapeOData(filters.search)}') or startswith(mail,'${escapeOData(filters.search)}'))` : '';
     let url = filterStr ? `${base}&$filter=${filterStr}` : base;
@@ -70,6 +73,12 @@ export const getUsers = async (token: string, filters?: UserSearchFilters): Prom
     }
     if (filters?.location) {
       filtered = filtered.filter(u => (u.officeLocation || '').toLowerCase().includes(filters.location!.toLowerCase()));
+    }
+
+    // If a search term is used, sort client-side by displayName (fallback to UPN)
+    if (filters?.search && filters.search.trim()) {
+      const key = (u: GraphUser) => (u.displayName || u.userPrincipalName || '').toString();
+      filtered = filtered.slice().sort((a, b) => key(a).localeCompare(key(b), undefined, { sensitivity: 'base' }));
     }
 
     info('graphUserService: fetched users', { count: filtered.length, filters });

@@ -3,8 +3,9 @@ import { useRBAC } from '../context/RBACContext';
 // import { useAuth } from '../context/AuthContext';
 import { GraphUser, GraphGroup, getUsers, getGroups, getOrganizationStructure, UserSearchFilters, getGroupMembers } from '../services/graphUserService';
 import AnalyticsDashboard from './AnalyticsDashboard';
+import { exportAnalyticsExcel } from '../utils/excelExport';
 import Modal from './Modal';
-import { sendEmail, buildBatchEmail /*, sendTeamsDirectMessage*/ } from '../services/notificationService';
+import { sendEmail, sendEmailWithAttachmentChunks, buildBatchEmail, fetchAsBase64 /*, sendTeamsDirectMessage*/ } from '../services/notificationService';
 import { getGraphToken } from '../services/authTokens';
 import { runAuthAndGraphCheck, Step } from '../diagnostics/health';
 import { getBusinesses, createBusiness, updateBusiness, deleteBusiness } from '../services/dbService';
@@ -12,6 +13,11 @@ import { getBusinesses, createBusiness, updateBusiness, deleteBusiness } from '.
 // SharePoint document browsing & upload
 import { SharePointSite, SharePointDocumentLibrary, SharePointDocument, getSharePointSites, getDocumentLibraries, getDocuments, uploadFileToDrive, getFolderItems } from '../services/sharepointService';
 import BatchCreationDebug from './BatchCreationDebug';
+import Alerts, { alertSuccess, alertError, alertInfo, alertWarning, confirmDialog, showToast } from '../utils/alerts';
+import { busyPush, busyPop } from '../utils/busy';
+import { getRoles, createRole, deleteRole, type DbRole } from '../services/dbService';
+import { isSQLiteEnabled, getApiBase, isAdminLight, useAdminModalSelectors } from '../utils/runtimeConfig';
+import RBACMatrix from './RBACMatrix';
 
 // Enhanced Admin Settings Component
 type AdminSettingsProps = { canEdit: boolean };
@@ -42,8 +48,8 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
   const apply = () => {
     if (!canEdit) return;
     try {
-      localStorage.setItem(storageKey, JSON.stringify(settings));
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Settings saved' } }));
+  localStorage.setItem(storageKey, JSON.stringify(settings));
+  Alerts.toast('Settings saved');
     } catch (e) {
       console.warn(e);
     }
@@ -51,21 +57,21 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
 
   const seedSqliteForMe = async () => {
     try {
-      if (!((process.env.REACT_APP_ENABLE_SQLITE === 'true') && process.env.REACT_APP_API_BASE)) {
-        window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Enable SQLite (REACT_APP_ENABLE_SQLITE=true) and set REACT_APP_API_BASE to seed.' } }));
+      if (!isSQLiteEnabled()) {
+        alertWarning('SQLite disabled', 'Enable SQLite (REACT_APP_ENABLE_SQLITE=true) and set REACT_APP_API_BASE to seed.');
         return;
       }
       if (!account?.username) {
-        window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Sign in first to seed data for your account.' } }));
+        alertInfo('Sign in required', 'Sign in first to seed data for your account.');
         return;
       }
-      const base = (process.env.REACT_APP_API_BASE as string).replace(/\/$/, '');
+  const base = (getApiBase() as string);
       const res = await fetch(`${base}/api/seed?email=${encodeURIComponent(account.username)}`, { method: 'POST' });
       if (!res.ok) throw new Error('Seed failed');
       const j = await res.json().catch(() => ({}));
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: `SQLite seeded. BatchId: ${j?.batchId ?? 'n/a'}` } }));
+      alertSuccess('SQLite seeded', `BatchId: <b>${j?.batchId ?? 'n/a'}</b>`);
     } catch (e) {
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'SQLite seed failed' } }));
+      alertError('Seed failed', 'Unable to seed demo data.');
     }
   };
 
@@ -79,9 +85,9 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
       await getGraphToken(['Group.Read.All']);
       await getGraphToken(['Sites.Read.All','Files.ReadWrite.All']);
       await getGraphToken(['Mail.Send']);
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Core Graph permissions granted (if consented)' } }));
+      showToast('Core Graph permissions granted');
     } catch (e) {
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Grant permissions failed' } }));
+      showToast('Grant permissions failed', 'error');
     }
   };
 
@@ -131,6 +137,16 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
       </div>
 
       {/* SharePoint provisioning UI removed */}
+      {/* Environment summary */}
+      <div className="card" style={{ padding: 12 }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>Environment & Feature Flags</div>
+        <div className="small" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', rowGap: 4, columnGap: 8 }}>
+          <div>SQLite Enabled</div><div>{isSQLiteEnabled() ? 'true' : 'false'}</div>
+          <div>API Base</div><div>{String(getApiBase() || '—')}</div>
+          <div>Admin Light Mode</div><div>{isAdminLight() ? 'true' : 'false'}</div>
+          <div>Modal Selectors (default)</div><div>{useAdminModalSelectors() ? 'true' : 'false'}</div>
+        </div>
+      </div>
     </div>
   );
 };
@@ -150,6 +166,7 @@ const UserGroupSelector: React.FC<{ onSelectionChange: (selection: any) => void 
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
   const [usersPage, setUsersPage] = useState<number>(1);
   const [groupsPage, setGroupsPage] = useState<number>(1);
+  const [groupSearch, setGroupSearch] = useState<string>('');
   const pageSize = 50;
 
   const loadData = async () => {
@@ -175,7 +192,7 @@ const UserGroupSelector: React.FC<{ onSelectionChange: (selection: any) => void 
         ? 'Please sign in to continue.'
         : 'Ask your admin to grant Microsoft Graph permissions (User.Read.All and Group.Read.All) to this app.';
       setHadError(`${msg || 'Failed to load user data.'} ${hint}`.trim());
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: `Failed to load user data. ${hint}` } }));
+  showToast(`Failed to load user data. ${hint}`, 'error');
     } finally {
       setLoading(false);
     }
@@ -307,17 +324,33 @@ const UserGroupSelector: React.FC<{ onSelectionChange: (selection: any) => void 
       {/* Users Tab */}
       {tab === 'users' && (
         <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+          {/* Users search */}
+          <div style={{ marginBottom: 12 }}>
+            <input 
+              type="text"
+              placeholder="Search users (name or email)"
+              value={localSearch}
+              onChange={e => setLocalSearch(e.target.value)}
+              style={{ width: '100%', padding: 6, border: '1px solid #ddd', borderRadius: 4 }}
+            />
+          </div>
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
             <button className="btn ghost sm" onClick={() => setSelectedUsers(new Set(users.map(u => u.id)))}>Select All</button>
             <button className="btn ghost sm" onClick={() => setSelectedUsers(new Set())}>Clear</button>
             <span className="small muted">Selected: {selectedUsers.size}</span>
           </div>
           {users.slice(0, usersPage * pageSize).map(user => (
-            <div key={user.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, borderBottom: '1px solid #f0f0f0' }}>
-              <input 
-                type="checkbox" 
-                checked={selectedUsers.has(user.id)} 
-                onChange={() => toggleUser(user.id)} 
+            <div
+              key={user.id}
+              onClick={() => toggleUser(user.id)}
+              role="button"
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
+            >
+              <input
+                type="checkbox"
+                checked={selectedUsers.has(user.id)}
+                onClick={e => e.stopPropagation()}
+                onChange={() => toggleUser(user.id)}
               />
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 500 }}>{user.displayName}</div>
@@ -338,12 +371,29 @@ const UserGroupSelector: React.FC<{ onSelectionChange: (selection: any) => void 
       {/* Groups Tab */}
       {tab === 'groups' && (
         <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+          {/* Groups search (client-side filter) */}
+          <div style={{ marginBottom: 12 }}>
+            <input 
+              type="text"
+              placeholder="Search groups"
+              value={groupSearch}
+              onChange={e => { setGroupSearch(e.target.value); setGroupsPage(1); }}
+              style={{ width: '100%', padding: 6, border: '1px solid #ddd', borderRadius: 4 }}
+            />
+          </div>
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
             <button className="btn ghost sm" onClick={() => setSelectedGroups(new Set(groups.map(g => g.id)))}>Select All</button>
             <button className="btn ghost sm" onClick={() => setSelectedGroups(new Set())}>Clear</button>
             <span className="small muted">Selected: {selectedGroups.size}</span>
           </div>
-          {groups.slice(0, groupsPage * pageSize).map(group => (
+          {groups
+            .filter(g => {
+              if (!groupSearch.trim()) return true;
+              const q = groupSearch.toLowerCase();
+              return (g.displayName || '').toLowerCase().includes(q) || (g.description || '').toLowerCase().includes(q) || (g.mail || '').toLowerCase().includes(q);
+            })
+            .slice(0, groupsPage * pageSize)
+            .map(group => (
             <div key={group.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, borderBottom: '1px solid #f0f0f0' }}>
               <input 
                 type="checkbox" 
@@ -415,7 +465,7 @@ const DocumentListEditor: React.FC<{ onChange: (docs: SimpleDoc[]) => void; init
 };
 
 // SharePoint Document Browser Component (restored)
-const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[]) => void }> = ({ onDocumentSelect }) => {
+const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[]) => void; canUpload?: boolean }> = ({ onDocumentSelect, canUpload = false }) => {
   const { getToken, login, account } = useAuthCtx();
   const [loading, setLoading] = useState(false);
   const [sites, setSites] = useState<SharePointSite[]>([]);
@@ -434,7 +484,44 @@ const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[
   const [breadcrumbs, setBreadcrumbs] = useState<Array<{ id: string; name: string }>>([{ id: 'root', name: 'Root' }]);
   const [spError, setSpError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [typeFilter, setTypeFilter] = useState<string>('all');
   const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB UX guard
+
+  // Favorites handling
+  const favKey = 'sp:favorites';
+  const [favorites, setFavorites] = useState<Set<string>>(() => {
+    try { const raw = localStorage.getItem(favKey); if (!raw) return new Set(); return new Set(JSON.parse(raw)); } catch { return new Set(); }
+  });
+  const persistFavs = (next: Set<string>) => { setFavorites(new Set(next)); try { localStorage.setItem(favKey, JSON.stringify(Array.from(next))); } catch {} };
+  const docKey = (d: SharePointDocument) => d.id || d.webUrl || (d as any).name || '';
+  const toggleFav = (d: SharePointDocument) => {
+    const k = docKey(d);
+    const next = new Set(favorites);
+    const isAdding = !next.has(k);
+    if (isAdding) next.add(k); else next.delete(k);
+    persistFavs(next);
+    // UX: Starring also toggles selection for the document
+    try {
+      if (d.id) {
+        setSelectedDocs(prev => {
+          const copy = new Set(prev);
+          if (isAdding) copy.add(d.id as string); else copy.delete(d.id as string);
+          return copy;
+        });
+      }
+    } catch {}
+  };
+  const fileIcon = (name?: string) => {
+    const n = (name || '').toLowerCase();
+    if (n.endsWith('.pdf')) return '📕';
+    if (n.endsWith('.doc') || n.endsWith('.docx')) return '📝';
+    if (n.endsWith('.xls') || n.endsWith('.xlsx')) return '📊';
+    if (n.endsWith('.ppt') || n.endsWith('.pptx')) return '📑';
+    if (n.endsWith('.txt')) return '📄';
+    if (n.endsWith('.html') || n.endsWith('.htm')) return '🌐';
+    return '📁';
+  };
 
   const loadSites = async () => {
     setLoading(true); setSpError(null);
@@ -493,6 +580,8 @@ const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[
   }, [selectedLibrary, searchQuery]);
   useEffect(() => { if (!selectedLibrary) return; if (spTab !== 'browse') return; loadDocuments(selectedLibrary, selectedFolderId || 'root'); }, [selectedFolderId, spTab]);
   useEffect(() => { const selected = Array.from(selectedDocs).map(id => documents.find(d => d.id === id)!).filter(Boolean); onDocumentSelect(selected); }, [selectedDocs, documents]);
+  // Enforce browse tab when uploads are not permitted
+  useEffect(() => { if (!canUpload && spTab === 'upload') setSpTab('browse'); }, [canUpload, spTab]);
 
   const toggleDocument = (docId: string) => {
     const next = new Set(selectedDocs);
@@ -535,9 +624,9 @@ const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[
           setUploadStatuses(prev => { const copy = [...prev]; const idx = copy.findIndex(u => u.name === f.name); if (idx >= 0) copy[idx] = { ...copy[idx], error: msg }; return copy; });
         }
       }
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: `Uploaded ${uploadedDocs.length} file(s)` } }));
+  showToast(`Uploaded ${uploadedDocs.length} file(s)`, 'success');
       setSpTab('browse');
-    } catch (e) { console.error('Upload failed', e); window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Upload failed' } })); }
+  } catch (e) { console.error('Upload failed', e); showToast('Upload failed', 'error'); }
     finally { setUploading(false); setUploadProgress(null); }
   };
 
@@ -566,11 +655,10 @@ const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, borderBottom: '1px solid #e0e0e0' }}>
-        {(['browse', 'upload'] as const).map(t => (
-          <button key={t} className={spTab === t ? 'btn sm' : 'btn ghost sm'} onClick={() => setSpTab(t)}>
-            {t === 'browse' ? 'Browse' : 'Upload'}
-          </button>
-        ))}
+        <button className={spTab === 'browse' ? 'btn sm' : 'btn ghost sm'} onClick={() => setSpTab('browse')}>Browse</button>
+        {canUpload && (
+          <button className={spTab === 'upload' ? 'btn sm' : 'btn ghost sm'} onClick={() => setSpTab('upload')}>Upload</button>
+        )}
       </div>
 
       {loading && <div className="small muted">Loading...</div>}
@@ -615,6 +703,21 @@ const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[
               ))}
             </div>
           )}
+          {/* Filters & View options */}
+          <div className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <input type="checkbox" checked={favoritesOnly} onChange={e => setFavoritesOnly(e.target.checked)} />
+              Favorites only
+            </label>
+            <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}>
+              <option value="all">All types</option>
+              <option value="pdf">PDF</option>
+              <option value="word">Word</option>
+              <option value="excel">Excel</option>
+              <option value="ppt">PowerPoint</option>
+              <option value="text">Text/HTML</option>
+            </select>
+          </div>
           {selectedLibrary && folderItems.filter(i => i.folder).map(f => (
             <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderBottom: '1px solid #f5f5f5' }}>
               <button className="btn ghost sm" onClick={() => navigateFolder(f.id, f.name)}>📁 {f.name}</button>
@@ -628,14 +731,33 @@ const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[
                 <button className="btn ghost sm" onClick={() => setSelectedDocs(new Set())}>Clear</button>
                 <span className="small muted">Selected: {selectedDocs.size}</span>
               </div>
-              {documents.map(doc => (
-                <div key={doc.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, borderBottom: '1px solid #f0f0f0' }}>
-                  <input type="checkbox" checked={selectedDocs.has(doc.id)} onChange={() => toggleDocument(doc.id)} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 500 }}>{doc.name}</div>
+              {documents
+                .filter(d => !favoritesOnly || favorites.has(docKey(d)))
+                .filter(d => {
+                  const n = (d.name || '').toLowerCase();
+                  if (typeFilter === 'all') return true;
+                  if (typeFilter === 'pdf') return n.endsWith('.pdf');
+                  if (typeFilter === 'word') return n.endsWith('.doc') || n.endsWith('.docx');
+                  if (typeFilter === 'excel') return n.endsWith('.xls') || n.endsWith('.xlsx');
+                  if (typeFilter === 'ppt') return n.endsWith('.ppt') || n.endsWith('.pptx');
+                  if (typeFilter === 'text') return n.endsWith('.txt') || n.endsWith('.html') || n.endsWith('.htm');
+                  return true;
+                })
+                .map(doc => (
+                <div
+                  key={doc.id}
+                  onClick={() => toggleDocument(doc.id)}
+                  role="button"
+                  style={{ display: 'grid', gridTemplateColumns: 'auto auto 1fr auto', alignItems: 'center', gap: 8, padding: 8, borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
+                >
+                  <button className="btn ghost sm" title={favorites.has(docKey(doc)) ? 'Unpin' : 'Pin'} onClick={(e) => { e.stopPropagation(); toggleFav(doc); }}>{favorites.has(docKey(doc)) ? '⭐' : '☆'}</button>
+                  <span aria-hidden>{fileIcon(doc.name)}</span>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.name}</div>
                     <div className="small muted">{doc.size ? (doc.size / 1024).toFixed(1) + ' KB' : ''}{doc.lastModifiedDateTime ? ` • Modified ${new Date(doc.lastModifiedDateTime).toLocaleDateString()}` : ''}</div>
-                    <a href={doc.webUrl} target="_blank" rel="noopener noreferrer" className="small" style={{ color: '#0066cc' }}>View in SharePoint ↗</a>
+                    <a href={doc.webUrl} target="_blank" rel="noopener noreferrer" className="small" style={{ color: '#0066cc' }} onClick={(e) => e.stopPropagation()}>View in SharePoint ↗</a>
                   </div>
+                  <input type="checkbox" checked={selectedDocs.has(doc.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggleDocument(doc.id)} />
                 </div>
               ))}
             </>
@@ -644,7 +766,7 @@ const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[
       )}
 
       {/* Upload Mode */}
-      {spTab === 'upload' && (
+      {canUpload && spTab === 'upload' && (
         <div>
           {!selectedLibrary && <div className="small muted" style={{ marginBottom: 8 }}>Select a site and library to enable uploads.</div>}
           {selectedLibrary && (
@@ -701,9 +823,9 @@ const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[
 
 // Main Admin Panel Component
 const AdminPanel: React.FC = () => {
-  const { role, canSeeAdmin, canEditAdmin } = useRBAC();
+  const { role, canSeeAdmin, canEditAdmin, isSuperAdmin, perms } = useRBAC();
   const { account } = useAuthCtx();
-  const [activeTab, setActiveTab] = useState<'overview' | 'settings' | 'manage' | 'batch' | 'analytics'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'settings' | 'rbac' | 'manage' | 'batch' | 'analytics'>('overview');
   const [editingBatchId, setEditingBatchId] = useState<string | null>(null);
   const [originalRecipientEmails, setOriginalRecipientEmails] = useState<Set<string>>(new Set());
   const [originalDocUrls, setOriginalDocUrls] = useState<Set<string>>(new Set());
@@ -723,9 +845,9 @@ const AdminPanel: React.FC = () => {
   const [permStatus, setPermStatus] = useState<Record<string, boolean>>({});
 
   const MODAL_TOGGLE_KEY = 'sunbeth:admin:useModalSelectors';
-  const adminLight = (process.env.REACT_APP_ADMIN_LIGHT || '').toLowerCase() === 'true';
+  const adminLight = isAdminLight();
   const defaultModalToggle = ((): boolean => {
-    const env = (process.env.REACT_APP_ADMIN_MODAL_SELECTORS || '').toLowerCase();
+  const env = useAdminModalSelectors() ? 'true' : 'false';
     if (env === 'true') return true; if (env === 'false') return false; return true; // default ON to avoid mounting heavy selectors
   })();
   const [useModalSelectors, setUseModalSelectors] = useState<boolean>(() => {
@@ -794,9 +916,9 @@ const AdminPanel: React.FC = () => {
       batchForm.selectedUsers.forEach(push);
       members.forEach(push);
       setMappingUsers(Array.from(mergedByEmail.values()));
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: `Loaded ${members.length} member(s) from selected group(s)` } }));
+  showToast(`Loaded ${members.length} member(s) from selected group(s)`, 'success');
     } catch (e) {
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Failed to expand groups for mapping' } }));
+  showToast('Failed to expand groups for mapping', 'error');
     }
   };
   // Maintain user -> business mapping by email
@@ -830,14 +952,28 @@ const AdminPanel: React.FC = () => {
 
 
 
-  const tabs = [
-    { id: 'overview', label: 'Overview', icon: '📊' },
-    { id: 'settings', label: 'Settings', icon: '⚙️' },
-    { id: 'manage', label: 'Manage', icon: '🧰' },
-    { id: 'batch', label: 'Create Batch', icon: '📝' },
-    { id: 'analytics', label: 'Analytics', icon: '📈' }
-  ];
-  const sqliteEnabled = (process.env.REACT_APP_ENABLE_SQLITE === 'true') && !!process.env.REACT_APP_API_BASE;
+  const tabs = (() => {
+    const base: Array<{ id: string; label: string; icon: string }> = [
+      { id: 'overview', label: 'Overview', icon: '📊' },
+    ];
+    // Settings only if allowed
+    if (isSuperAdmin || perms?.manageSettings) {
+      base.push({ id: 'settings', label: 'Settings', icon: '⚙️' });
+    }
+    // Show Permission tab only if user can manage roles or permissions (Super Admin always)
+    if (isSuperAdmin || perms?.manageRoles || perms?.managePermissions) {
+      base.push({ id: 'rbac', label: 'Permission', icon: '🔐' } as any);
+    }
+    base.push(
+      { id: 'manage', label: 'Manage', icon: '🧰' } as any,
+      // Create/edit batch only if allowed (Super Admin always)
+      ...((isSuperAdmin || perms?.createBatch || perms?.editBatch) ? [{ id: 'batch', label: 'Create Batch', icon: '📝' } as any] : []),
+      // Analytics only if allowed (Super Admin always)
+      ...((isSuperAdmin || perms?.viewAnalytics) ? [{ id: 'analytics', label: 'Analytics', icon: '📈' } as any] : [])
+    );
+    return base;
+  })();
+  const sqliteEnabled = isSQLiteEnabled();
   const [overviewStats, setOverviewStats] = useState<{ totalBatches: number; activeBatches: number; totalUsers: number; completionRate: number; overdueBatches: number; avgCompletionTime: number } | null>(null);
   type Business = { id: number; name: string; code?: string; isActive?: boolean };
   const [businesses, setBusinesses] = useState<Business[]>([]);
@@ -847,7 +983,7 @@ const AdminPanel: React.FC = () => {
     if (!sqliteEnabled) return;
     (async () => {
       try {
-        const base = (process.env.REACT_APP_API_BASE as string).replace(/\/$/, '');
+  const base = (getApiBase() as string);
         const res = await fetch(`${base}/api/stats`);
         if (!res.ok) throw new Error('stats_failed');
         const j = await res.json();
@@ -881,12 +1017,27 @@ const AdminPanel: React.FC = () => {
 
   const saveBatch = async () => {
     try {
+      busyPush('Creating your batch...');
       // SQLite-only persistence via API
-      if (!((process.env.REACT_APP_ENABLE_SQLITE === 'true') && process.env.REACT_APP_API_BASE)) {
-        window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Enable SQLite (REACT_APP_ENABLE_SQLITE=true) and set REACT_APP_API_BASE.' } }));
+      if (!isSQLiteEnabled()) {
+        await alertInfo('SQLite disabled', 'Enable SQLite (REACT_APP_ENABLE_SQLITE=true) and set REACT_APP_API_BASE.');
         return;
       }
-      const base = (process.env.REACT_APP_API_BASE as string).replace(/\/$/, '');
+      const base = (getApiBase() as string);
+
+      // Validate form data
+      if (!batchForm.name.trim()) {
+        await alertWarning('Missing batch name', 'Batch name is required');
+        return;
+      }
+
+      console.log('🚀 Starting comprehensive batch creation process...', {
+        batchName: batchForm.name,
+        selectedDocs: batchForm.selectedDocuments.length,
+        selectedUsers: batchForm.selectedUsers.length,
+        selectedGroups: batchForm.selectedGroups.length,
+        isEditing: !!editingBatchId
+      });
 
       // Build recipients from selected users and expand selected groups into members
       const recipientSet = new Map<string, { address: string; name?: string }>();
@@ -949,61 +1100,14 @@ const AdminPanel: React.FC = () => {
         const filtered = recipients.filter(r => isNew(r.address));
         recipientsToNotify = filtered;
       }
-      if (batchForm.notifyByEmail && recipientsToNotify.length > 0) {
-        await sendEmail(recipientsToNotify, subject, bodyHtml);
-      }
+      // Note: email sending occurs later after successful persistence
       // Teams optional (requires Chat.ReadWrite)
       // if (batchForm.notifyByTeams) {
       //   const userIds = batchForm.selectedUsers.map(u => u.id);
       //   await sendTeamsDirectMessage(userIds, `New acknowledgement assigned: ${batchForm.name}`);
       // }
 
-      // 1) Create or update batch in SQLite
-      let batchId: string | undefined;
-      if (!editingBatchId) {
-        const createRes = await fetch(`${base}/api/batches`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: batchForm.name,
-            startDate: batchForm.startDate || null,
-            dueDate: batchForm.dueDate || null,
-            description: batchForm.description || null,
-            status: 1
-          })
-        });
-        if (!createRes.ok) throw new Error('batch_create_failed');
-        const createJson = await createRes.json();
-        const batchIdRaw = (createJson?.id ?? createJson?.batchId ?? createJson?.toba_batchid ?? createJson?.ID);
-        batchId = typeof batchIdRaw === 'string' ? batchIdRaw : (Number.isFinite(Number(batchIdRaw)) ? String(batchIdRaw) : undefined);
-        
-        console.log('🔍 DEBUG: Batch creation result:', {
-          createJson,
-          batchIdRaw,
-          finalBatchId: batchId
-        });
-        
-        if (!batchId) throw new Error('batch_id_missing');
-        
-        // Small delay to ensure batch is fully committed before adding relations
-        await new Promise(resolve => setTimeout(resolve, 100));
-      } else {
-        batchId = editingBatchId;
-        const updateRes = await fetch(`${base}/api/batches/${encodeURIComponent(batchId)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: batchForm.name,
-            startDate: batchForm.startDate || null,
-            dueDate: batchForm.dueDate || null,
-            description: batchForm.description || null,
-            status: 1
-          })
-        });
-        if (!updateRes.ok) throw new Error('batch_update_failed');
-      }
-
-      // 2) Add documents (only new ones on edit; full set on create)
+      // Pre-build documents and recipients payloads for persistence
       const allDocsPayload = batchForm.selectedDocuments.map(d => ({
         title: d.title,
         url: d.url,
@@ -1013,33 +1117,6 @@ const AdminPanel: React.FC = () => {
         itemId: (d as any).itemId || null,
         source: (d as any).source || null
       }));
-      const docsToPost = !editingBatchId
-        ? allDocsPayload
-        : allDocsPayload.filter(d => !originalDocUrls.has((d.url || '').trim()));
-      
-      console.log('🔍 DEBUG: Documents to post:', {
-        isCreating: !editingBatchId,
-        totalDocs: allDocsPayload.length,
-        docsToPost: docsToPost.length,
-        batchId
-      });
-      
-      if (docsToPost.length > 0) {
-        const docsRes = await fetch(`${base}/api/batches/${batchId}/documents`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ documents: docsToPost })
-        });
-        if (!docsRes.ok) {
-          const errorText = await docsRes.text().catch(() => '');
-          console.error('Documents insert failed:', docsRes.status, errorText);
-          throw new Error(`docs_insert_failed: ${docsRes.status} - ${errorText}`);
-        } else {
-          const docsResult = await docsRes.json().catch(() => null);
-          console.log('✅ DEBUG: Documents API success:', docsResult);
-        }
-      }
-
-      // 3) Add recipients
       const recipientsPayloadAll = recipients.map(r => {
         const emailLower = (r.address || '').toLowerCase();
         const u = userByEmailLower.get(emailLower);
@@ -1064,9 +1141,105 @@ const AdminPanel: React.FC = () => {
           primaryGroup: primaryGroupName || undefined
         };
       });
+
+  // 1) Create or update batch in SQLite
+  let handledRelations = false;
+  let createdCounts: { documentsInserted?: number; recipientsInserted?: number } = {};
+      let batchId: string | undefined;
+      if (!editingBatchId) {
+        // Enforce at least one doc and one recipient on create (UI guard + API contract)
+        if (allDocsPayload.length === 0) {
+          await alertWarning('No documents selected', 'Select at least one document');
+          return;
+        }
+        if (recipientsPayloadAll.length === 0) {
+          await alertWarning('No recipients selected', 'Select at least one recipient (user or group)');
+          return;
+        }
+
+        // New atomic create: batch + documents + recipients in one transaction
+        const createRes = await fetch(`${base}/api/batches/full`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            batch: {
+              name: batchForm.name,
+              startDate: batchForm.startDate || null,
+              dueDate: batchForm.dueDate || null,
+              description: batchForm.description || null,
+              status: 1
+            },
+            documents: allDocsPayload,
+            recipients: recipientsPayloadAll
+          })
+        });
+        if (!createRes.ok) {
+          let errMsg = 'batch_create_failed';
+          try { const e = await createRes.json(); if (e?.error) errMsg = String(e.error); } catch { try { errMsg = await createRes.text(); } catch {} }
+          console.error('Batch full create failed:', createRes.status, errMsg);
+          throw new Error(errMsg || 'batch_create_failed');
+        }
+  const createJson = await createRes.json();
+        const batchIdRaw = (createJson?.id ?? createJson?.batchId ?? createJson?.toba_batchid ?? createJson?.ID);
+        batchId = typeof batchIdRaw === 'string' ? batchIdRaw : (Number.isFinite(Number(batchIdRaw)) ? String(batchIdRaw) : undefined);
+
+        console.log('✅ DEBUG: Full batch creation success:', {
+          createJson,
+          finalBatchId: batchId
+        });
+        if (!batchId) throw new Error('batch_id_missing');
+        handledRelations = true; // docs + recipients already created atomically
+        createdCounts = {
+          documentsInserted: Number(createJson?.documentsInserted) || undefined,
+          recipientsInserted: Number(createJson?.recipientsInserted) || undefined
+        };
+      } else {
+        batchId = editingBatchId;
+        const updateRes = await fetch(`${base}/api/batches/${encodeURIComponent(batchId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: batchForm.name,
+            startDate: batchForm.startDate || null,
+            dueDate: batchForm.dueDate || null,
+            description: batchForm.description || null,
+            status: 1
+          })
+        });
+        if (!updateRes.ok) throw new Error('batch_update_failed');
+      }
+
+      // 2) Add documents (only when editing; create handled atomically above)
+      const docsToPost = !editingBatchId
+        ? (handledRelations ? [] : allDocsPayload)
+        : allDocsPayload.filter(d => !originalDocUrls.has((d.url || '').trim()));
+      
+      console.log('🔍 DEBUG: Documents to post:', {
+        isCreating: !editingBatchId,
+        totalDocs: allDocsPayload.length,
+        docsToPost: docsToPost.length,
+        batchId
+      });
+      
+      if (docsToPost.length > 0) {
+        const docsRes = await fetch(`${base}/api/batches/${batchId}/documents`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ documents: docsToPost })
+        });
+        if (!docsRes.ok) {
+          const errorText = await docsRes.text().catch(() => '');
+          console.error('Documents insert failed:', docsRes.status, errorText);
+          throw new Error(`docs_insert_failed: ${docsRes.status} - ${errorText}`);
+        } else {
+          const docsResult = await docsRes.json().catch(() => null);
+          console.log('✅ DEBUG: Documents API success:', docsResult);
+        }
+      }
+
+      // 3) Add recipients (only when editing; create handled atomically above)
       const recipientsPayload = editingBatchId
         ? recipientsPayloadAll.filter(r => !originalRecipientEmails.has((r.email || '').trim().toLowerCase()))
-        : recipientsPayloadAll;
+        : (handledRelations ? [] : recipientsPayloadAll);
       
       console.log('🔍 DEBUG: Recipients to post:', {
         isCreating: !editingBatchId,
@@ -1094,16 +1267,61 @@ const AdminPanel: React.FC = () => {
           const rows = await verify.json();
           if (!Array.isArray(rows) || rows.length === 0) {
             console.warn('Recipients verification returned empty for batch', batchId);
-            window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Warning: recipients not linked to batch (verification empty)' } }));
+            await alertWarning('Verification warning', 'Recipients not linked to batch (verification returned empty)');
           }
         } catch (e) {
           console.warn('Recipients verification failed', e);
         }
       }
 
+      // Send notifications after successful persistence
+      if (batchForm.notifyByEmail && recipientsToNotify.length > 0) {
+        // Build attachments from all selected documents
+        const attachments: Array<{ name: string; contentBytes: string; contentType?: string }> = [];
+        try {
+          const base = (getApiBase() as string);
+          const docs = batchForm.selectedDocuments;
+          for (const d of docs) {
+            try {
+              const title = d.title || 'document';
+              const isSp = (d as any).source === 'sharepoint' || /sharepoint\.com\//i.test(d.url);
+              let fileUrl = d.url;
+              if (isSp) {
+                try {
+                  const token = await getGraphToken(['Files.Read.All','Sites.Read.All']);
+                  const encoded = encodeURIComponent(d.url);
+                  fileUrl = `${base}/api/proxy/graph?url=${encoded}&token=${encodeURIComponent(token)}&download=1`;
+                } catch {}
+              } else {
+                fileUrl = `${base}/api/proxy?url=${encodeURIComponent(d.url)}`;
+              }
+              const { contentBytes, contentType } = await fetchAsBase64(fileUrl);
+              attachments.push({ name: title, contentBytes, contentType });
+            } catch (e) { /* skip this doc */ }
+          }
+        } catch (e) { /* non-blocking */ }
+        try {
+          if (attachments.length > 0) {
+            await sendEmailWithAttachmentChunks(recipientsToNotify, subject, bodyHtml, attachments);
+          } else {
+            await sendEmail(recipientsToNotify, subject, bodyHtml, undefined);
+          }
+        }
+        catch (e) { console.warn('Email send failed (non-blocking)', e); }
+      }
+
       // Final feedback
-  const actionWord = editingBatchId ? 'updated' : 'created';
-  window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: `Batch "${batchForm.name}" ${actionWord} in SQLite${batchForm.notifyByEmail ? ' and email sent' : ''}.` } }));
+      const actionWord = editingBatchId ? 'updated' : 'created';
+      const countSuffix = (!editingBatchId && handledRelations)
+        ? ` (${createdCounts.documentsInserted ?? 0} doc${(createdCounts.documentsInserted ?? 0) === 1 ? '' : 's'}, ${createdCounts.recipientsInserted ?? 0} recipient${(createdCounts.recipientsInserted ?? 0) === 1 ? '' : 's'})`
+        : '';
+      // Show success alert (overlay should be gone to let alert pop nicely)
+      busyPop();
+      await alertSuccess(`Batch ${actionWord}`,
+        `\n<strong>${batchForm.name}</strong>${countSuffix ? `<div class=\"small muted\">${countSuffix.replace(/[()]/g,'')}</div>` : ''}` +
+        (batchForm.notifyByEmail ? '<div class=\"small muted\">Email notification sent</div>' : ''),
+        { showDenyButton: true, confirmButtonText: 'Great!', denyButtonText: 'Create another' }
+      );
 
       // Reset form
       setBatchForm({
@@ -1125,7 +1343,11 @@ const AdminPanel: React.FC = () => {
 
     } catch (e) {
       console.error('Save batch failed', e);
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Failed to save batch or send notifications' } }));
+      await alertError('Batch save failed', (e as any)?.message || 'Failed to save batch or send notifications');
+    }
+    finally {
+      // Ensure overlay is cleared even if we exited early
+      busyPop();
     }
   };
 
@@ -1133,7 +1355,7 @@ const AdminPanel: React.FC = () => {
   const startEditBatch = async (id: string) => {
     try {
       if (!sqliteEnabled) return;
-      const base = (process.env.REACT_APP_API_BASE as string).replace(/\/$/, '');
+  const base = (getApiBase() as string);
       // Fetch all batches and find one
       const bRes = await fetch(`${base}/api/batches`);
       const all = await bRes.json();
@@ -1190,10 +1412,76 @@ const AdminPanel: React.FC = () => {
       setDefaultBusinessId('');
       setEditingBatchId(String(id));
       setActiveTab('batch');
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Loaded batch into editor' } }));
+      showToast('Loaded batch into editor', 'success');
     } catch (e) {
       console.error('Failed to load batch for editing', e);
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Failed to open batch for editing' } }));
+      showToast('Failed to open batch for editing', 'error');
+    }
+  };
+
+  // Clone an existing batch into the form for creating a new one
+  const startCloneBatch = async (id: string) => {
+    try {
+      if (!sqliteEnabled) return;
+  const base = (getApiBase() as string);
+      // Fetch all batches and find one
+      const bRes = await fetch(`${base}/api/batches`);
+      const all = await bRes.json();
+      const b = (Array.isArray(all) ? all : []).find((x: any) => String(x.toba_batchid || x.id || x.batchId || x.ID) === String(id));
+      if (!b) throw new Error('batch_not_found');
+      // Documents
+      let docs: any[] = [];
+      try {
+        const dRes = await fetch(`${base}/api/batches/${encodeURIComponent(id)}/documents`);
+        docs = await dRes.json();
+      } catch { docs = []; }
+      // Recipients
+      let recs: any[] = [];
+      try {
+        const rRes = await fetch(`${base}/api/recipients`);
+        const allRecs = await rRes.json();
+        recs = (Array.isArray(allRecs) ? allRecs : []).filter((r: any) => String(r.batchId) === String(id));
+      } catch { recs = []; }
+
+      const selectedDocuments = (docs || []).map((d: any) => ({
+        title: d.title || d.name || d.toba_title || 'Document',
+        url: d.url || d.webUrl || d.toba_fileurl,
+        version: Number(d.version || d.toba_version || 1),
+        requiresSignature: !!(d.requiresSignature ?? d.toba_requiressignature),
+        driveId: d.driveId || d.toba_driveid || undefined,
+        itemId: d.itemId || d.toba_itemid || undefined,
+        source: d.source || d.toba_source || ((d.driveId || d.toba_driveid) ? 'sharepoint' : undefined)
+      }));
+      const selectedUsers = (recs || []).map((r: any) => ({ id: r.email || r.user || r.userPrincipalName || r.id || r.email, displayName: r.displayName || r.email, userPrincipalName: r.email, department: r.department, jobTitle: r.jobTitle } as any));
+      const selectedGroups: GraphGroup[] = [];
+      // Map user -> business
+      const nextMap: Record<string, number | null> = {};
+      for (const r of recs) {
+        const emailLower = String(r.email || r.user || '').toLowerCase();
+        if (emailLower) nextMap[emailLower] = r.businessId != null ? Number(r.businessId) : null;
+      }
+
+      setBatchForm({
+        name: (String(b.toba_name || b.name || '') + ' (Copy)').trim(),
+        startDate: '',
+        dueDate: '',
+        description: String(b.description || ''),
+        selectedUsers: selectedUsers as any,
+        selectedGroups,
+        selectedDocuments,
+        notifyByEmail: true,
+        notifyByTeams: false
+      });
+      setBusinessMap(nextMap);
+      setDefaultBusinessId('');
+      setEditingBatchId(null); // new batch
+      setOriginalRecipientEmails(new Set());
+      setOriginalDocUrls(new Set());
+      setActiveTab('batch');
+  showToast('Prepared clone in editor', 'success');
+    } catch (e) {
+      console.error('Failed to clone batch', e);
+  showToast('Failed to clone batch', 'error');
     }
   };
 
@@ -1205,6 +1493,7 @@ const AdminPanel: React.FC = () => {
           <div>
             <h1 style={{ margin: 0, fontSize: 24, color: 'var(--primary)' }}>Admin Panel</h1>
             <p className="small muted">Role: {role} • {canEditAdmin ? 'Full Access' : 'Read Only'}</p>
+            {/* Intentionally removed loud role badge for a more professional, minimal header */}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {sqliteEnabled && (
@@ -1214,43 +1503,37 @@ const AdminPanel: React.FC = () => {
                 <button className="btn ghost sm" onClick={pingApi} style={{ marginLeft: 6 }}>Refresh</button>
               </div>
             )}
-            <button className="btn ghost sm" onClick={() => {
-              try {
-                // Simple CSV export of selected documents
-                const rows = [
-                  ['Title','Url'],
-                  ...batchForm.selectedDocuments.map(d => [d.title, d.url])
-                ];
-                const csv = rows.map(r => r.map(x => '"' + String(x).replace(/"/g, '""') + '"').join(',')).join('\n');
-                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url; a.download = 'sunbeth-export.csv'; a.click();
-                URL.revokeObjectURL(url);
-              } catch (e) { console.warn('Export failed', e); }
-            }}>Export Data</button>
+            {(isSuperAdmin || perms?.exportAnalytics) && (
+              <button className="btn ghost sm" onClick={async () => {
+                try {
+                  await exportAnalyticsExcel();
+                } catch (e) { console.warn('Excel export failed', e); showToast('Excel export failed', 'error'); }
+              }}>Export Excel</button>
+            )}
             <button className="btn ghost sm" onClick={async () => {
               setHealthOpen(true);
               setHealthSteps(null);
               try { setHealthSteps(await runAuthAndGraphCheck()); } catch (e) { setHealthSteps([{ name: 'Health check', ok: false, detail: String(e) }]); }
             }}>System Health</button>
-            <button 
-              className="btn ghost sm" 
-              onClick={() => setShowDebugConsole(true)}
-              title="Open batch creation debug console"
-            >
-              🔍 Debug Logs
-            </button>
+            {(isSuperAdmin || perms?.viewDebugLogs) && (
+              <button 
+                className="btn ghost sm" 
+                onClick={() => setShowDebugConsole(true)}
+                title="Open batch creation debug console"
+              >
+                🔍 Debug Logs
+              </button>
+            )}
             {sqliteEnabled && canEditAdmin && (
               <button className="btn ghost sm" onClick={async () => {
                 try {
-                  const base = (process.env.REACT_APP_API_BASE as string).replace(/\/$/, '');
+                  const base = (getApiBase() as string);
                   const email = account?.username || 'seed.user@sunbeth.com';
                   const res = await fetch(`${base}/api/seed?email=${encodeURIComponent(email)}`, { method: 'POST' });
                   if (!res.ok) throw new Error('seed_failed');
-                  window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Seeded demo data' } }));
+                  showToast('Seeded demo data', 'success');
                 } catch {
-                  window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Seed failed' } }));
+                  showToast('Seed failed', 'error');
                 }
               }}>Seed Data</button>
             )}
@@ -1309,7 +1592,7 @@ const AdminPanel: React.FC = () => {
                       // Request all needed scopes in a user-friendly sequence
                       for (const s of requiredScopes) { try { await getGraphToken([s]); } catch {} }
                       await checkPermissions();
-                      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Permission prompts completed' } }));
+                      showToast('Permission prompts completed', 'success');
                     } finally { setGranting(false); }
                   }} disabled={granting}>Grant All</button>
                 </div>
@@ -1334,20 +1617,46 @@ const AdminPanel: React.FC = () => {
           </div>
         )}
 
-        {activeTab === 'settings' && <AdminSettings canEdit={canEditAdmin} />}
+  {activeTab === 'settings' && <AdminSettings canEdit={!!(isSuperAdmin || perms?.manageSettings)} />}
 
         {activeTab === 'manage' && (
           <div style={{ display: 'grid', gap: 16 }}>
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Batches</h3>
               <div className="small muted" style={{ marginBottom: 8 }}>View, edit, or delete batches. Deleting a batch removes its documents, recipients, and acknowledgements.</div>
-              <ManageBatches canEdit={canEditAdmin} onEdit={(id) => startEditBatch(id)} />
+              <ManageBatches canEdit={canEditAdmin} onEdit={(id) => startEditBatch(id)} onClone={(id) => startCloneBatch(id)} />
             </div>
-            <div className="card" style={{ padding: 16 }}>
-              <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Businesses</h3>
-              <div className="small muted" style={{ marginBottom: 8 }}>Create, edit, or delete businesses. Deleting a business will unassign it from any recipients mapped to it.</div>
-              <BusinessesManager canEdit={canEditAdmin} />
-            </div>
+            {(isSuperAdmin || perms?.manageBusinesses) && (
+              <div className="card" style={{ padding: 16 }}>
+                <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Businesses</h3>
+                <div className="small muted" style={{ marginBottom: 8 }}>Create, edit, or delete businesses. Deleting a business will unassign it from any recipients mapped to it.</div>
+                <BusinessesManager canEdit={canEditAdmin} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'rbac' && (
+          <div style={{ display: 'grid', gap: 16 }}>
+            {(isSuperAdmin || perms?.manageRoles) && (
+              <div className="card" style={{ padding: 16 }}>
+                <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Roles</h3>
+                <div className="small muted" style={{ marginBottom: 8 }}>Manage Admin and Manager assignments without editing .env. Top-level access is configured via environment variables.</div>
+                <RolesManager canEdit={canEditAdmin} isSuperAdmin={isSuperAdmin} />
+              </div>
+            )}
+            {(isSuperAdmin || perms?.managePermissions) && (
+              <div className="card" style={{ padding: 16 }}>
+                <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Permissions Matrix</h3>
+                <div className="small muted" style={{ marginBottom: 8 }}>Configure what each role can do, and set per-user overrides when needed.</div>
+                <RBACMatrix />
+              </div>
+            )}
+            {!(isSuperAdmin || perms?.manageRoles) && !(isSuperAdmin || perms?.managePermissions) && (
+              <div className="card" style={{ padding: 16 }}>
+                <div className="small muted">You don’t have permission to view Permission settings.</div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1409,7 +1718,7 @@ const AdminPanel: React.FC = () => {
             {!useModalSelectors ? (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 24, marginBottom: 24 }}>
                 <UserGroupSelector onSelectionChange={(selection) => setBatchForm({...batchForm, selectedUsers: selection.users, selectedGroups: selection.groups})} />
-                <SharePointBrowser onDocumentSelect={(spDocs) => setBatchForm({
+                <SharePointBrowser canUpload={!!(isSuperAdmin || perms?.uploadDocuments)} onDocumentSelect={(spDocs) => setBatchForm({
                   ...batchForm,
                   selectedDocuments: spDocs.map(d => ({
                     title: d.name,
@@ -1599,9 +1908,9 @@ const AdminPanel: React.FC = () => {
                       }
                     }
                     const count = recipientSet.size;
-                    window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: `Recipient preview: ${count} unique addresses` } }));
+                    showToast(`Recipient preview: ${count} unique addresses`, 'info');
                   } catch (e) {
-                    window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Failed to preview recipients' } }));
+                    showToast('Failed to preview recipients', 'error');
                   }
                 }}>Preview Recipients</button>
                 <button className="btn ghost" title="Grant Graph permissions" onClick={async () => {
@@ -1610,9 +1919,9 @@ const AdminPanel: React.FC = () => {
                     await getGraphToken(['User.Read.All','Group.Read.All']);
                     await getGraphToken(['Mail.Send']);
                     await getGraphToken(['Sites.Read.All','Files.ReadWrite.All']);
-                    window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Permissions granted (if consented)' } }));
+                    showToast('Permissions granted (if consented)', 'success');
                   } catch (e) {
-                    window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Permission grant failed' } }));
+                    showToast('Permission grant failed', 'error');
                   }
                 }}>Grant Permissions</button>
               </div>
@@ -1631,7 +1940,7 @@ const AdminPanel: React.FC = () => {
             <UserGroupSelector onSelectionChange={(selection) => setBatchForm({...batchForm, selectedUsers: selection.users, selectedGroups: selection.groups})} />
           </Modal>
           <Modal open={docsModalOpen} onClose={() => setDocsModalOpen(false)} title="SharePoint Documents" width={920}>
-            <SharePointBrowser onDocumentSelect={(spDocs) => setBatchForm({
+            <SharePointBrowser canUpload={!!(isSuperAdmin || perms?.uploadDocuments)} onDocumentSelect={(spDocs) => setBatchForm({
               ...batchForm,
               selectedDocuments: spDocs.map(d => ({
                 title: d.name,
@@ -1678,7 +1987,7 @@ const AdminPanel: React.FC = () => {
                       await getGraphToken(['Sites.Read.All']);
                       await getGraphToken(['Files.ReadWrite.All']);
                       await getGraphToken(['Mail.Send']);
-                      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Requested missing permissions' } }));
+                      showToast('Requested missing permissions', 'info');
                     } finally {
                       setGranting(false);
                       try { setHealthSteps(await runAuthAndGraphCheck()); } catch {}
@@ -1704,8 +2013,262 @@ const AdminPanel: React.FC = () => {
 export default AdminPanel;
 
 // --- Admin helpers: Businesses & Batches managers ---
+const RolesManager: React.FC<{ canEdit: boolean; isSuperAdmin: boolean }> = ({ canEdit, isSuperAdmin }) => {
+  const { getToken, login, account } = useAuthCtx();
+  const [roles, setRoles] = useState<DbRole[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState<'Admin' | 'Manager'>('Manager');
+  const sqliteEnabled = sqliteOn();
+
+  // User search via Microsoft Graph
+  const [userQuery, setUserQuery] = useState('');
+  const [userResults, setUserResults] = useState<GraphUser[]>([]);
+  const [userLoading, setUserLoading] = useState(false);
+  const [userError, setUserError] = useState<string | null>(null);
+  const [filters, setFilters] = useState<{ department?: string; jobTitle?: string; location?: string }>({});
+  const [org, setOrg] = useState<{ departments: string[]; jobTitles: string[]; locations: string[] }>({ departments: [], jobTitles: [], locations: [] });
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const load = async () => {
+    if (!sqliteEnabled) { setRoles([]); return; }
+    try {
+      const list = await getRoles();
+      setRoles(Array.isArray(list) ? list : []);
+    } catch {
+      setRoles([]);
+    }
+  };
+  useEffect(() => { load(); }, [sqliteEnabled]);
+
+  // Load organization structure for filters
+  useEffect(() => {
+    (async () => {
+      try {
+        const token = await getToken(['User.Read.All']);
+        if (!token) return;
+        const o = await getOrganizationStructure(token);
+        setOrg(o);
+      } catch {}
+    })();
+  }, []);
+
+  const searchUsers = async () => {
+    setUserError(null);
+    if (!userQuery.trim()) { setUserResults([]); return; }
+    setUserLoading(true);
+    try {
+      const token = await getToken(['User.Read.All']);
+      if (!token) throw new Error('Sign-in required');
+      const results = await getUsers(token, { search: userQuery.trim(), department: filters.department, jobTitle: filters.jobTitle, location: filters.location });
+      setUserResults(Array.isArray(results) ? results.slice(0, 200) : []);
+    } catch (e: any) {
+      setUserError(typeof e?.message === 'string' ? e.message : 'Failed to search users');
+      setUserResults([]);
+    } finally {
+      setUserLoading(false);
+    }
+  };
+
+  // Debounce search on inputs
+  useEffect(() => {
+    const t = setTimeout(() => { void searchUsers(); }, 450);
+    return () => clearTimeout(t);
+  }, [userQuery, filters.department, filters.jobTitle, filters.location]);
+
+  const add = async () => {
+    if (!canEdit || !sqliteEnabled) return;
+    const e = email.trim().toLowerCase();
+    if (!e || !e.includes('@')) { showToast('Enter a valid email', 'warning'); return; }
+    setBusy(true);
+    try {
+      await createRole(e, role);
+      setEmail('');
+      await load();
+      showToast('Role added', 'success');
+    } catch {
+      showToast('Failed to add role', 'error');
+    } finally { setBusy(false); }
+  };
+
+  const assignToUser = async (u: GraphUser, r: 'Admin' | 'Manager') => {
+    if (!canEdit || !sqliteEnabled) return;
+    const addr = (u.mail || u.userPrincipalName || '').trim().toLowerCase();
+    if (!addr) { showToast('User has no email/UPN', 'warning'); return; }
+    setBusy(true);
+    try {
+      // If user already has a role, replace it when different
+      const existing = roles.find(x => (x.email || '').toLowerCase() === addr);
+      if (existing) {
+        if (existing.role === r) {
+          showToast(`${u.displayName || addr} already ${r}`, 'info');
+          setBusy(false); return;
+        }
+        try { await deleteRole(existing.id); } catch {}
+      }
+      await createRole(addr, r);
+      await load();
+      showToast(`Assigned ${r} to ${u.displayName || addr}`, 'success');
+    } catch {
+      showToast('Failed to assign role', 'error');
+    } finally { setBusy(false); }
+  };
+
+  const assignBulk = async (r: 'Admin' | 'Manager') => {
+    if (!canEdit || !sqliteEnabled || selected.size === 0) return;
+    setBusy(true);
+    try {
+      for (const id of Array.from(selected)) {
+        const u = userResults.find(x => x.id === id);
+        if (u) { await assignToUser(u, r); }
+      }
+      setSelected(new Set());
+      showToast(`Assigned ${r} to ${selected.size} user(s)`, 'success');
+    } catch {
+      showToast('Bulk assign failed', 'error');
+    } finally { setBusy(false); }
+  };
+
+  const toggleSel = (id: string) => {
+    setSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  };
+
+  const exportRolesCsv = () => {
+    const rows = [['email','role']].concat(roles.map(r => [r.email, r.role]));
+    const csv = rows.map(r => r.map(v => '"' + String(v ?? '').replace(/"/g,'""') + '"').join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'roles.csv'; a.click(); URL.revokeObjectURL(url);
+  };
+
+  const remove = async (id: number) => {
+    if (!canEdit || !sqliteEnabled) return;
+    setBusy(true);
+    try { await deleteRole(id); await load(); showToast('Role removed', 'success'); }
+    catch { showToast('Failed to remove role', 'error'); }
+    finally { setBusy(false); }
+  };
+
+  const grouped = roles.reduce((acc: Record<string, DbRole[]>, r) => {
+    const key = r.role || 'Unknown';
+    (acc[key] = acc[key] || []).push(r);
+    return acc;
+  }, {} as Record<string, DbRole[]>);
+
+  if (!sqliteEnabled) return <div className="small muted">Enable SQLite to manage roles.</div>;
+  return (
+    <div>
+      {/* Directory user search and quick-assign */}
+      <div className="card" style={{ padding: 12, marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontWeight: 700 }}>Find users</div>
+            <div className="small muted">Search your directory and assign Admin/Manager</div>
+          </div>
+          {!account && (
+            <button className="btn ghost sm" onClick={() => login()}>Sign in</button>
+          )}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, marginTop: 8 }}>
+          <input
+            placeholder="Search by name or email"
+            value={userQuery}
+            onChange={e => setUserQuery(e.target.value)}
+          />
+          <button className="btn sm" onClick={searchUsers} disabled={userLoading}>Search</button>
+        </div>
+        {/* Filters */}
+        <div className="small" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+          <select value={filters.department || ''} onChange={e => setFilters(f => ({ ...f, department: e.target.value || undefined }))}>
+            <option value="">All departments</option>
+            {org.departments.map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+          <select value={filters.jobTitle || ''} onChange={e => setFilters(f => ({ ...f, jobTitle: e.target.value || undefined }))}>
+            <option value="">All job titles</option>
+            {org.jobTitles.map(j => <option key={j} value={j}>{j}</option>)}
+          </select>
+          <select value={filters.location || ''} onChange={e => setFilters(f => ({ ...f, location: e.target.value || undefined }))}>
+            <option value="">All locations</option>
+            {org.locations.map(l => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </div>
+        {/* Bulk actions */}
+        {selected.size > 0 && (
+          <div className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+            <span>{selected.size} selected</span>
+            <button className="btn ghost sm" onClick={() => assignBulk('Manager')} disabled={!canEdit || busy}>Assign Manager</button>
+            <button className="btn ghost sm" onClick={() => assignBulk('Admin')} disabled={!canEdit || busy}>Assign Admin</button>
+          </div>
+        )}
+        {userError && <div className="small" style={{ color: '#d33', marginTop: 6 }}>{userError}</div>}
+        {userLoading && <div className="small muted" style={{ marginTop: 6 }}>Loading...</div>}
+        {!userLoading && userResults.length > 0 && (
+          <div style={{ marginTop: 8, maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 6 }}>
+            {userResults.map(u => {
+              const email = (u.mail || u.userPrincipalName || '').trim();
+              const existing = roles.find(r => (r.email || '').toLowerCase() === (email || '').toLowerCase());
+              return (
+                <div key={u.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto auto', gap: 8, alignItems: 'center' }}>
+                  <input type="checkbox" checked={selected.has(u.id)} onChange={() => toggleSel(u.id)} />
+                  <div>
+                    <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.displayName || email || u.id}</div>
+                    <div className="small muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</div>
+                    {existing && <span className="badge" style={{ marginTop: 4 }}>{existing.role}</span>}
+                  </div>
+                  {!existing && (
+                    <button className="btn ghost sm" onClick={() => assignToUser(u, 'Manager')} disabled={!canEdit || busy}>Assign Manager</button>
+                  )}
+                  {!existing && (
+                    <button className="btn ghost sm" onClick={() => assignToUser(u, 'Admin')} disabled={!canEdit || busy}>Assign Admin</button>
+                  )}
+                  {existing && (
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn ghost sm" onClick={() => assignToUser(u, existing.role === 'Admin' ? 'Manager' : 'Admin')} disabled={!canEdit || busy}>Change to {existing.role === 'Admin' ? 'Manager' : 'Admin'}</button>
+                      <button className="btn ghost sm" onClick={async () => { try { setBusy(true); await deleteRole(existing.id); await load(); showToast('Role removed', 'success'); } catch { showToast('Failed to remove role', 'error'); } finally { setBusy(false); } }} disabled={!canEdit || busy}>Remove</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+        <input type="email" placeholder="user@domain.com" value={email} onChange={e => setEmail(e.target.value)} style={{ padding: 8, border: '1px solid #ddd', borderRadius: 6 }} />
+        <select value={role} onChange={e => setRole(e.target.value as any)} style={{ padding: 8, border: '1px solid #ddd', borderRadius: 6 }}>
+          <option value="Manager">Manager</option>
+          <option value="Admin">Admin</option>
+        </select>
+        <button className="btn sm" onClick={add} disabled={!canEdit || busy}>Add</button>
+        {!canEdit && <span className="small muted">Read-only</span>}
+        <button className="btn ghost sm" onClick={exportRolesCsv} title="Export current role assignments as CSV">Export CSV</button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
+        {['Admin', 'Manager'].map(k => (
+          <div key={k} className="card" style={{ padding: 12 }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>{k}s</div>
+            {Array.isArray(grouped[k]) && grouped[k].length > 0 ? (
+              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                {grouped[k].map(r => (
+                  <li key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #f2f2f2' }}>
+                    <span className="small">{r.email}</span>
+                    {canEdit && <button className="btn ghost sm" onClick={() => remove(r.id)} disabled={busy}>Remove</button>}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="small muted">No {k.toLowerCase()}s assigned</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
 type Biz = { id: number; name: string; code?: string; isActive?: boolean; description?: string };
-const apiBase = () => ((process.env.REACT_APP_API_BASE as string) || '').replace(/\/$/, '');
+const apiBase = () => (getApiBase() as string) || '';
 const sqliteOn = () => (process.env.REACT_APP_ENABLE_SQLITE === 'true') && !!process.env.REACT_APP_API_BASE;
 
 const BusinessesManager: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
@@ -1722,7 +2285,7 @@ const BusinessesManager: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
 
   const create = async () => {
     if (!canEdit || !sqliteOn()) return;
-    const name = form.name.trim(); if (!name) { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Enter a business name' } })); return; }
+    const name = form.name.trim(); if (!name) { showToast('Enter a business name', 'warning'); return; }
     setBusy(true);
     try {
       await createBusiness({ 
@@ -1733,8 +2296,8 @@ const BusinessesManager: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
       });
       setForm({ name: '', code: '', isActive: true, description: '' });
       await load();
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Business created' } }));
-    } catch { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Failed to create business' } })); }
+      showToast('Business created', 'success');
+    } catch { showToast('Failed to create business', 'error'); }
     finally { setBusy(false); }
   };
 
@@ -1746,20 +2309,21 @@ const BusinessesManager: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
       await updateBusiness(id, row);
       setEditRow(prev => { const p = { ...prev }; delete p[id]; return p; });
       await load();
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Business updated' } }));
-    } catch { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Failed to update business' } })); }
+      showToast('Business updated', 'success');
+    } catch { showToast('Failed to update business', 'error'); }
     finally { setBusy(false); }
   };
 
   const del = async (id: number) => {
     if (!canEdit || !sqliteOn()) return;
-    if (!confirm('Delete this business? This will unassign it from any recipients.')) return;
+    const ok = await confirmDialog('Delete this business?', 'This will unassign it from any recipients.', 'Delete', 'Cancel', { icon: 'warning' as any });
+    if (!ok) return;
     setBusy(true);
     try {
       await deleteBusiness(id);
       await load();
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Business deleted' } }));
-    } catch { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Failed to delete business' } })); }
+      showToast('Business deleted', 'success');
+    } catch { showToast('Failed to delete business', 'error'); }
     finally { setBusy(false); }
   };
 
@@ -1815,7 +2379,7 @@ const BusinessesManager: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   );
 };
 
-const ManageBatches: React.FC<{ canEdit: boolean; onEdit: (id: string) => void }> = ({ canEdit, onEdit }) => {
+const ManageBatches: React.FC<{ canEdit: boolean; onEdit: (id: string) => void; onClone: (id: string) => void }> = ({ canEdit, onEdit, onClone }) => {
   const [items, setItems] = useState<Array<{ toba_batchid: string; toba_name: string; toba_startdate?: string; toba_duedate?: string; toba_status?: string }>>([]);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<Record<string, { name: string; startDate: string; dueDate: string; status: string; description: string }>>({});
@@ -1832,15 +2396,16 @@ const ManageBatches: React.FC<{ canEdit: boolean; onEdit: (id: string) => void }
 
   const del = async (id: string) => {
     if (!canEdit || !sqliteOn()) return;
-    if (!confirm('Delete this batch and all related records?')) return;
+    const ok = await confirmDialog('Delete this batch?', 'This will remove its documents, recipients, and acknowledgements.', 'Delete', 'Cancel', { icon: 'warning' as any });
+    if (!ok) return;
     setBusy(true);
     try {
       const res = await fetch(`${apiBase()}/api/batches/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('delete_failed');
       await load();
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Batch deleted' } }));
+      showToast('Batch deleted', 'success');
     } catch {
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Failed to delete batch' } }));
+      showToast('Failed to delete batch', 'error');
     } finally { setBusy(false); }
   };
   const openRecipients = async (id: string) => {
@@ -1867,9 +2432,9 @@ const ManageBatches: React.FC<{ canEdit: boolean; onEdit: (id: string) => void }
       if (!res.ok) throw new Error('update_failed');
       setEditing(prev => { const p = { ...prev }; delete p[id]; return p; });
       await load();
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Batch updated' } }));
+      showToast('Batch updated', 'success');
     } catch {
-      window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Failed to update batch' } }));
+      showToast('Failed to update batch', 'error');
     } finally { setBusy(false); }
   };
 
@@ -1910,6 +2475,7 @@ const ManageBatches: React.FC<{ canEdit: boolean; onEdit: (id: string) => void }
                   <a href={`/batch/${b.toba_batchid}`}><button className="btn ghost sm">View</button></a>
                   <button className="btn ghost sm" onClick={() => openRecipients(b.toba_batchid)}>Recipients</button>
                   <button className="btn ghost sm" onClick={() => onEdit(b.toba_batchid)} disabled={!canEdit}>Edit</button>
+                  <button className="btn ghost sm" onClick={() => onClone(b.toba_batchid)} disabled={!canEdit}>Clone</button>
                   <button className="btn ghost sm" onClick={() => del(b.toba_batchid)} disabled={!canEdit || busy}>Delete</button>
                 </div>
               </>

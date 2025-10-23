@@ -5,6 +5,7 @@ import { useRBAC } from './context/RBACContext';
 // import DevPanel from './components/DevPanel';
 import { info } from './diagnostics/logger';
 import { getBatches, getUserProgress } from './services/dbService';
+import DancingLogoOverlay from './components/DancingLogoOverlay';
 
 const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { account, token, photo, login, logout } = useAuth();
@@ -115,6 +116,8 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
   }, [account, location.pathname, navigate]);
   return (
     <>
+      {/* Global busy overlay (dancing logo) */}
+      <DancingLogoOverlay />
   <header className={stickyHeader ? 'sticky' : ''}>
         <div className="brand">
           <img src="https://sunbethconcepts.sharepoint.com/:i:/r/sites/CommunicationsandCorporateAffairs/Shared%20Documents/Comms%20Intranet/Logos%20of%20Sunbeth/SGCL%20Coloured%20LOGO.png?csf=1&web=1&e=2IQ9AL" alt="Sunbeth" onError={(e)=>{(e.target as HTMLImageElement).style.opacity = '0.18'; (e.target as HTMLImageElement).alt='Logo'}} />

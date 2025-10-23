@@ -6,6 +6,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useRBAC } from '../context/RBACContext';
 import { getBatches, getUserProgress } from '../services/dbService';
 import type { Batch } from '../types/models';
 
@@ -15,6 +16,7 @@ const Dashboard: React.FC = () => {
   const [progressMap, setProgressMap] = useState<Record<string, { percent: number; total: number; acknowledged: number }>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const rbac = useRBAC();
 
   useEffect(() => {
     const load = async () => {
@@ -88,12 +90,14 @@ const Dashboard: React.FC = () => {
           <div>
             <div className="title">Welcome{account ? `, ${account.name}` : ''}</div>
             <div className="muted" style={{ marginTop: 6 }}>You have <strong>{incompleteCount}</strong> pending items</div>
-            {account?.username && (
-              <div className="small muted" style={{ marginTop: 4 }}>Signed in as: {account.username}</div>
-            )}
           </div>
           <div style={{ textAlign: 'right' }}>
             <div className="muted small">Due by: <strong style={{ color: 'var(--accent)' }}>{earliestDue ? formatDate(earliestDue) : '—'}</strong></div>
+            {rbac.canSeeAdmin && (
+              <div style={{ marginTop: 8 }}>
+                <Link to="/admin"><button className="btn ghost sm">Admin</button></Link>
+              </div>
+            )}
           </div>
         </div>
         <hr style={{ margin: '16px 0', border: 'none', borderTop: '1px solid #f2f2f2' }} />

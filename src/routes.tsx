@@ -20,7 +20,7 @@ export const AppRoutes: React.FC = () => {
       <Route path="/about" element={<About />} />
       <Route path="/batch/:id" element={<RequireAuth><BatchDetail /></RequireAuth>} />
       <Route path="/batch/:id/completed" element={<RequireAuth><CompletedBatch /></RequireAuth>} />
-      <Route path="/document/:id" element={<RequireAuth><DocumentReader /></RequireAuth>} />
+  <Route path="/document/:id/*" element={<RequireAuth><DocumentReader /></RequireAuth>} />
       <Route path="/summary" element={<RequireAuth><Summary /></RequireAuth>} />
       <Route path="/admin" element={<AdminGuard><AdminPanel /></AdminGuard>} />
     </Routes>

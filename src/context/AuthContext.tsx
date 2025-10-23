@@ -12,6 +12,7 @@
  */
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { msalInstance, AccountInfo } from '../services/msalConfig';
+import { showToast } from '../utils/alerts';
 import { info, warn, error as logError } from '../diagnostics/logger';
 import { getInteractiveMode } from '../services/authInteractive';
 
@@ -167,7 +168,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const acct = (accounts && accounts.length) ? accounts[0] : res.account;
       if (!acct) {
         logError('login: no account returned');
-        try { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Sign in failed (no account returned)' } })); } catch (e) { }
+        try { showToast('Sign in failed (no account returned)', 'error'); } catch (e) { }
         return;
       }
       msalInstance.setActiveAccount(acct);
@@ -194,12 +195,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
       if (!access) {
-        try { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Sign in failed: could not acquire token' } })); } catch (e) { }
+        try { showToast('Sign in failed: could not acquire token', 'error'); } catch (e) { }
         return;
       }
   setToken(access);
       setAccount(acct);
-      try { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Signed in' } })); } catch (e) { }
+  try { showToast('Signed in', 'success'); } catch (e) { }
 
   // No full reload; view will switch to Dashboard based on account state
     } catch (e) {
@@ -211,7 +212,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       } catch (er) {
         logError('loginRedirect also failed', er);
-        try { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Sign in failed' } })); } catch (err) { }
+  try { showToast('Sign in failed', 'error'); } catch (err) { }
       }
     } finally { setLoggingIn(false); }
   };
@@ -224,11 +225,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setToken(null);
       setPhoto(null);
       try { localStorage.setItem(SUPPRESS_KEY, 'true'); } catch {}
-      try { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Signed out' } })); } catch (e) { }
+  try { showToast('Signed out', 'success'); } catch (e) { }
       // No full reload; routes will render Landing based on account=null
     } catch (e) {
       logError('logout failed', e);
-      try { window.dispatchEvent(new CustomEvent('sunbeth:toast', { detail: { message: 'Sign out failed' } })); } catch (er) { }
+  try { showToast('Sign out failed', 'error'); } catch (er) { }
     }
   };
 

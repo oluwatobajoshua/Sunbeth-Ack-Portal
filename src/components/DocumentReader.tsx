@@ -6,11 +6,14 @@
  * - Navigates previous/next between documents and shows progress.
  */
 import React, { useMemo, useState, useEffect } from 'react';
+import PdfViewer from './viewers/PdfViewer';
+import DocxViewer from './viewers/DocxViewer';
 import { Link, useNavigate, useParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { sendAcknowledgement } from '../services/flowService';
+import { busyPush, busyPop } from '../utils/busy';
 import Toast from './Toast';
-import { getDocumentsByBatch, getUserProgress, getAcknowledgedDocIds } from '../services/dbService';
+import { getDocumentsByBatch, getUserProgress, getAcknowledgedDocIds, getDocumentById } from '../services/dbService';
 import type { Doc } from '../types/models';
 
 const DocumentReader: React.FC = () => {
@@ -43,6 +46,7 @@ const DocumentReader: React.FC = () => {
       ackmethod: 'Clicked Accept'
     };
     try {
+      busyPush('Submitting your acknowledgement...');
       setToastMsg('Acknowledgement submitted');
       setShowToast(true);
       await sendAcknowledgement(payload);
@@ -67,41 +71,61 @@ const DocumentReader: React.FC = () => {
       // fallback behavior
       navigate(`/batch/${payload.batchId}`);
     }
+    finally {
+      busyPop();
+    }
   };
 
   const [toastMsg, setToastMsg] = React.useState('');
   const [showToast, setShowToast] = React.useState(false);
 
-  // load docs for the batch and find current index
+  // load docs for the batch and find current index; if batchId is missing, fall back to resolving by document id
   useEffect(() => {
     (async () => {
-      if (!batchIdFromQuery) return;
       try {
-        const batchId = batchIdFromQuery as string;
-        const list = await getDocumentsByBatch(batchId, token ?? undefined);
-        setDocs(list);
-        const idx = list.findIndex((d: Doc) => d.toba_documentid === id);
-        setIndex(idx >= 0 ? idx : 0);
-        // set a progress text
-        try {
-          const p = await getUserProgress(batchId, token ?? undefined, undefined, account?.username || undefined);
-          setProgressText(`${p.percent}%`);
-        } catch {}
-        // check if this doc is already acknowledged
-        try {
-          const ackIds = await getAcknowledgedDocIds(batchId, token ?? undefined, account?.username || undefined);
-          setAlreadyAcked(ackIds.includes(id!));
-        } catch {}
-        finally { setAckCheckReady(true); }
+        if (batchIdFromQuery) {
+          const batchId = batchIdFromQuery as string;
+          const list = await getDocumentsByBatch(batchId, token ?? undefined);
+          setDocs(list);
+          const idx = list.findIndex((d: Doc) => d.toba_documentid === id);
+          setIndex(idx >= 0 ? idx : 0);
+          // Progress and ack state
+          try {
+            const p = await getUserProgress(batchId, token ?? undefined, undefined, account?.username || undefined);
+            setProgressText(`${p.percent}%`);
+          } catch {}
+          try {
+            const ackIds = await getAcknowledgedDocIds(batchId, token ?? undefined, account?.username || undefined);
+            setAlreadyAcked(ackIds.includes(id!));
+          } catch {}
+          finally { setAckCheckReady(true); }
+        } else if (id) {
+          const doc = await getDocumentById(id);
+          if (doc) {
+            const mapped: Doc = {
+              toba_documentid: String(doc.toba_documentid || doc.id || id),
+              toba_title: doc.toba_title || doc.title || `Document ${id}`,
+              toba_version: String(doc.toba_version || doc.version || '1'),
+              toba_requiressignature: !!(doc.toba_requiressignature ?? doc.requiresSignature ?? false),
+              toba_fileurl: doc.toba_fileurl || doc.url,
+            } as any;
+            setDocs([mapped]);
+            setIndex(0);
+            setAckCheckReady(true);
+          } else {
+            setAckCheckReady(true);
+          }
+        } else {
+          setAckCheckReady(true);
+        }
       } catch (e) {
-        // ignore
         setAckCheckReady(true);
       }
     })();
   }, [batchIdFromQuery, id, token, account?.username]);
 
   const prevDoc = () => {
-    if (index <= 0) {
+    if (!Array.isArray(docs) || index <= 0) {
       // go back to batch
       navigate(`/batch/${batchIdFromQuery || ''}`);
       return;
@@ -111,7 +135,7 @@ const DocumentReader: React.FC = () => {
   };
 
   const nextDoc = () => {
-    if (index >= docs.length - 1) {
+    if (!Array.isArray(docs) || index >= docs.length - 1) {
       // last doc -> go back to batch; summary is shown only when batch is fully acknowledged
       navigate(`/batch/${batchIdFromQuery || ''}`);
       return;
@@ -120,7 +144,7 @@ const DocumentReader: React.FC = () => {
     navigate(`/document/${nextId}?batchId=${batchIdFromQuery}`);
   };
 
-  const currentDoc = docs[index];
+  const currentDoc = (Array.isArray(docs) && index >= 0 && index < docs.length) ? docs[index] : undefined as any;
   const rawUrl = currentDoc?.toba_fileurl || (currentDoc as any)?.url || '';
   const rawBase = process.env.REACT_APP_API_BASE || '';
   // Resolve API base robustly to avoid requests hitting the frontend origin by mistake
@@ -139,6 +163,7 @@ const DocumentReader: React.FC = () => {
   }
 
   const [docUrl, setDocUrl] = useState<string>(rawUrl);
+  const [contentType, setContentType] = useState<string>('');
 
   useEffect(() => {
     (async () => {
@@ -182,8 +207,32 @@ const DocumentReader: React.FC = () => {
     })();
   // re-evaluate when the selected doc changes or apiBase changes
   }, [currentDoc, apiBase]);
+
+  // Attempt a quick proxy diagnostics call to learn the content-type so we can pick the correct viewer
+  useEffect(() => {
+    (async () => {
+      try {
+        setContentType('');
+        if (!docUrl) return;
+        if (apiBase && typeof docUrl === 'string' && docUrl.startsWith(apiBase)) {
+          const diagUrl = docUrl + (docUrl.includes('?') ? '&' : '?') + 'diag=1';
+          const res = await fetch(diagUrl);
+          const info = await res.json().catch(() => null);
+          const ct = (info?.contentType || res.headers.get('content-type') || '').toString();
+          if (ct) setContentType(ct);
+        }
+      } catch {
+        // ignore; viewer selection will fall back to extension-based detection
+      }
+    })();
+  }, [docUrl, apiBase]);
   const docTitle = currentDoc?.toba_title || `Document ${id}`;
-  const isPdf = typeof docUrl === 'string' && /\.pdf(\?|#|$)/i.test(docUrl);
+  // Determine viewer by URL extension or content-type (set by diagnostics)
+  const extHintPdf = /\.pdf(\?|#|$)/i.test(rawUrl) || /\.pdf(\?|#|$)/i.test(docUrl);
+  const extHintDocx = /\.docx(\?|#|$)/i.test(rawUrl) || /\.docx(\?|#|$)/i.test(docUrl);
+  const isPdf = extHintPdf || /application\/pdf/i.test(contentType);
+  const isDocx = extHintDocx || /vnd\.openxmlformats-officedocument\.wordprocessingml\.document/i.test(contentType);
+  const proxiedDownloadUrl = docUrl ? (docUrl + (docUrl.includes('?') ? '&' : '?') + 'download=1') : '';
 
   return (
     <div className="container">
@@ -197,21 +246,28 @@ const DocumentReader: React.FC = () => {
         </div>
         <div className="viewer" style={{ marginTop: 12 }}>
           {docUrl ? (
-            <iframe
-              key={docUrl}
-              title={docTitle}
-              src={docUrl}
-              style={{ width: '100%', height: '70vh', border: '1px solid #eee', borderRadius: 6 }}
-              sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-            />
+            isPdf ? (
+              <PdfViewer url={docUrl} />
+            ) : isDocx ? (
+              <DocxViewer url={docUrl} />
+            ) : (
+              <div className="muted small" style={{ padding: 12, textAlign: 'center', border: '1px solid #eee', borderRadius: 6 }}>
+                Preview not available for this file type. Use Download or Open in new tab.
+              </div>
+            )
           ) : (
             <div className="muted small" style={{ padding: 12, textAlign: 'center' }}>
               No document URL found for this item.
             </div>
           )}
-          {rawUrl && (
+          {(docUrl || rawUrl) && (
             <div className="small" style={{ marginTop: 8, textAlign: 'right' }}>
-              <a href={rawUrl} target="_blank" rel="noopener noreferrer">Open in new tab ↗</a>
+              {docUrl && (
+                <a href={docUrl} target="_blank" rel="noopener noreferrer" style={{ marginRight: 12 }}>Open in new tab ↗</a>
+              )}
+              {docUrl && (
+                <a href={proxiedDownloadUrl} className="btn ghost xs">Download</a>
+              )}
             </div>
           )}
         </div>

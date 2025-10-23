@@ -112,14 +112,11 @@ export class BatchLogger {
 export const batchLogger = new BatchLogger();
 
 // Helper function to show user-friendly toast messages
+import { showToast } from './alerts';
+
 export const showBatchToast = (message: string, level: 'info' | 'success' | 'error' = 'info') => {
   try {
-    window.dispatchEvent(new CustomEvent('sunbeth:toast', { 
-      detail: { 
-        message,
-        type: level 
-      } 
-    }));
+    showToast(message, level as any);
   } catch (e) {
     console.warn('Failed to show toast:', e);
   }

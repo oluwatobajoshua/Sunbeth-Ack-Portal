@@ -7,15 +7,29 @@ import { initLogger, info } from './diagnostics/logger';
 import { ErrorBoundary } from './diagnostics/ErrorBoundary';
 import { DebugConsole } from './diagnostics/DebugConsole';
 import GlobalToast from './diagnostics/GlobalToast';
-import { initDiagnostics } from './diagnostics/bootstrap';
+import { initDiagnostics, installBusyNetworkTracking } from './diagnostics/bootstrap';
 import { runAuthAndGraphCheck } from './diagnostics/health';
+import { getBrandName, getApiBase, isSQLiteEnabled, getHrEmails, getClientId, getTenantId } from './utils/runtimeConfig';
 // Microsoft Graph Toolkit provider setup
 import { msalInstance } from './services/msalConfig';
 
 initLogger();
 info('index.tsx initializing app');
 initDiagnostics();
+installBusyNetworkTracking();
 try { (window as any).__sunbethRunDiagnostics = runAuthAndGraphCheck } catch {}
+
+// Log a concise env summary (non-sensitive) to help verify .env is applied
+try {
+  info('env:summary', {
+    brand: getBrandName(),
+    sqliteEnabled: isSQLiteEnabled(),
+    apiBase: getApiBase() || 'unset',
+    hrEmailsConfigured: getHrEmails().length,
+    clientIdPresent: !!getClientId(),
+    tenantIdPresent: !!getTenantId()
+  });
+} catch {}
 
 // Bootstrap asynchronously so we can initialize MSAL v3 before any API calls
 (async () => {
@@ -50,8 +64,8 @@ try { (window as any).__sunbethRunDiagnostics = runAuthAndGraphCheck } catch {}
     <React.StrictMode>
       <ErrorBoundary>
           <App />
-          {/* DebugConsole: show only in development mode */}
-          { process.env.NODE_ENV === 'development' && <DebugConsole /> }
+          {/* DebugConsole: show only in production mode */}
+          { process.env.NODE_ENV === 'production' && <DebugConsole /> }
           <GlobalToast />
       </ErrorBoundary>
     </React.StrictMode>

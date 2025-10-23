@@ -130,6 +130,21 @@ export const getAcknowledgedDocIds = async (batchId: string, token?: string, use
 };
 
 /**
+ * Fetch a single document by id (SQLite API only for now). Returns document with batchId attached.
+ */
+export const getDocumentById = async (docId: string): Promise<any | null> => {
+  const base = (process.env.REACT_APP_API_BASE || 'http://localhost:4000').replace(/\/$/, '');
+  try {
+    const res = await fetch(`${base}/api/documents/${encodeURIComponent(docId)}`);
+    if (!res.ok) return null;
+    const j = await res.json();
+    return j;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Fetch the list of businesses.
  * @param token Optional bearer token (not used with current backends)
  */
@@ -254,4 +269,32 @@ export const deleteBusiness = async (id: number, token?: string) => {
   });
   if (!res.ok) throw new Error('Failed to delete business');
   return await res.json();
+};
+
+// --- Roles management (SQLite API only) ---
+export type DbRole = { id: number; email: string; role: 'Admin'|'Manager'|'SuperAdmin'; createdAt?: string };
+
+export const getRoles = async (): Promise<DbRole[]> => {
+  const base = (process.env.REACT_APP_API_BASE || 'http://localhost:4000').replace(/\/$/, '');
+  const res = await fetch(`${base}/api/roles`);
+  if (!res.ok) return [];
+  const j = await res.json();
+  return Array.isArray(j) ? j : [];
+};
+
+export const createRole = async (email: string, role: 'Admin'|'Manager'): Promise<DbRole> => {
+  const base = (process.env.REACT_APP_API_BASE || 'http://localhost:4000').replace(/\/$/, '');
+  const res = await fetch(`${base}/api/roles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, role })
+  });
+  if (!res.ok) throw new Error('Failed to create role');
+  return await res.json();
+};
+
+export const deleteRole = async (id: number): Promise<void> => {
+  const base = (process.env.REACT_APP_API_BASE || 'http://localhost:4000').replace(/\/$/, '');
+  const res = await fetch(`${base}/api/roles/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to delete role');
 };
