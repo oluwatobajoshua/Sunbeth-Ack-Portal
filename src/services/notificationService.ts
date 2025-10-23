@@ -289,7 +289,7 @@ export const buildUserCompletionEmail = (opts: {
   const brand = getBrandName();
   const logo = getBrandLogoUrl();
   const primary = getBrandPrimaryColor();
-  const subject = `Completed by ${opts.userName || opts.userEmail}: ${opts.batchName}`;
+  const subject = `Batch Completion Notification: ${opts.batchName}`;
   const bodyHtml = `
     <div style="background:#f7f8fa;padding:24px">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:720px;margin:0 auto;background:#ffffff;border:1px solid #e9ecef;border-radius:10px;overflow:hidden">
@@ -303,9 +303,12 @@ export const buildUserCompletionEmail = (opts: {
         </tr>
         <tr>
           <td style="padding:20px;font-family:Segoe UI,Tahoma,Arial,sans-serif;color:#111">
-            <h2 style="margin:0 0 12px 0;font-size:18px;color:#111">User completed batch</h2>
-            <p style="margin:0 0 12px 0"><strong>${opts.userName || opts.userEmail}</strong> (${opts.userEmail}) has acknowledged all documents in <strong>${opts.batchName}</strong>.</p>
-            <table role="presentation" cellpadding="0" cellspacing="0" style="margin:8px 0;color:#333">
+            <h2 style="margin:0 0 12px 0;font-size:18px;color:#111">Batch Completion Notice</h2>
+            <p style="margin:0 0 12px 0">Dear Admin,</p>
+            <p style="margin:0 0 12px 0">We are pleased to inform you that the following user has completed all required acknowledgements for the batch <strong>${opts.batchName}</strong>:</p>
+            <table role="presentation" cellpadding="0" cellspacing="0" style="margin:8px 0 16px 0;color:#333">
+              <tr><td style="padding:4px 8px 4px 0;color:#666">Name:</td><td style="padding:4px 0"><strong>${opts.userName || opts.userEmail}</strong></td></tr>
+              <tr><td style="padding:4px 8px 4px 0;color:#666">Email:</td><td style="padding:4px 0">${opts.userEmail}</td></tr>
               ${opts.completedOn ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Completed on:</td><td style="padding:4px 0"><strong>${new Date(opts.completedOn).toLocaleString()}</strong></td></tr>` : ''}
               ${opts.totalDocuments != null ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Documents:</td><td style="padding:4px 0"><strong>${opts.totalDocuments}</strong></td></tr>` : ''}
               ${opts.department ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Department:</td><td style="padding:4px 0">${opts.department}</td></tr>` : ''}
@@ -314,9 +317,11 @@ export const buildUserCompletionEmail = (opts: {
               ${opts.businessName ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Business:</td><td style="padding:4px 0">${opts.businessName}</td></tr>` : ''}
               ${opts.primaryGroup ? `<tr><td style="padding:4px 8px 4px 0;color:#666">Primary group:</td><td style="padding:4px 0">${opts.primaryGroup}</td></tr>` : ''}
             </table>
+            <p style="margin:0 0 12px 0">You may review the batch and user details in the Acknowledgement Portal.</p>
             <p style="margin:16px 0 0 0">
               <a href="${opts.appUrl}" target="_blank" rel="noopener" style="display:inline-block;background:${primary};color:#fff;text-decoration:none;padding:10px 14px;border-radius:6px;font-weight:600">Open Portal</a>
             </p>
+            <p style="margin:24px 0 0 0;color:#666;font-size:12px">This is an automated notification from ${brand}. Please do not reply to this email.</p>
           </td>
         </tr>
       </table>

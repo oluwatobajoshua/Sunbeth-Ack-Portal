@@ -16,17 +16,24 @@ const Summary: React.FC = () => {
     if (!batchId || !account) return;
     setNudgeStatus('sending');
     try {
-      await sendAcknowledgement({
-        batchId,
-        userDisplay: account.name,
-        userEmail: account.username,
-        userPrincipalName: account.username,
-        email: account.username,
-        ackmethod: 'Nudge Admin (manual)'
-      });
+      // Fetch all documents for this batch
+      const docs = await import('../services/dbService').then(m => m.getDocumentsByBatch(batchId));
+      if (!Array.isArray(docs) || docs.length === 0) throw new Error('No documents found for batch');
+      // Send acknowledgement for each document
+      for (const doc of docs) {
+        await sendAcknowledgement({
+          batchId,
+          documentId: doc.toba_documentid || doc.id || doc.documentId,
+          userDisplay: account.name,
+          userEmail: account.username,
+          userPrincipalName: account.username,
+          email: account.username,
+          ackmethod: 'Nudge Admin (manual)'
+        });
+      }
       setNudgeStatus('sent');
       await alertSuccess('Notification Sent', 'The admin has been notified that you have completed your batch.');
-    } catch {
+    } catch (err) {
       setNudgeStatus('error');
       await alertError('Notification Failed', 'There was a problem sending the notification. Please try again.');
     }
