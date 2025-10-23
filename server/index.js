@@ -99,6 +99,25 @@ async function start() {
   // Attempt lightweight migrations for existing databases
   try { migrateSchema(db); } catch (e) { console.warn('Schema migration warning (non-fatal):', e); }
 
+
+  // Utilities (move up so 'one' and 'all' are defined before use)
+  const exec = (sql, params = []) => {
+    try { db.run(sql, params); persist(db); return true; } catch (e) { console.error(e); return false; }
+  };
+  const all = (sql, params = []) => {
+    const stmt = db.prepare(sql);
+    const rows = [];
+    try {
+      stmt.bind(params);
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        rows.push(row);
+      }
+    } finally { stmt.free(); }
+    return rows;
+  };
+  const one = (sql, params = []) => all(sql, params)[0] || null;
+
   // Seed DB roles from environment (.env) for Admins/Managers (idempotent)
   try {
     const parseList = (s) => String(s || '')
@@ -201,23 +220,41 @@ async function start() {
     next();
   });
 
-  // Utilities
-  const exec = (sql, params = []) => {
-    try { db.run(sql, params); persist(db); return true; } catch (e) { console.error(e); return false; }
-  };
-  const all = (sql, params = []) => {
-    const stmt = db.prepare(sql);
-    const rows = [];
+  // Notification Emails API
+  app.get('/api/notification-emails', (req, res) => {
     try {
-      stmt.bind(params);
+      const stmt = db.prepare('SELECT email FROM notification_emails ORDER BY email ASC');
+      const emails = [];
       while (stmt.step()) {
         const row = stmt.getAsObject();
-        rows.push(row);
+        emails.push(row.email);
       }
-    } finally { stmt.free(); }
-    return rows;
-  };
-  const one = (sql, params = []) => all(sql, params)[0] || null;
+      stmt.free();
+      res.json({ emails });
+    } catch (e) {
+      res.status(500).json({ error: 'Failed to load notification emails', details: e?.message || e });
+    }
+  });
+
+  app.post('/api/notification-emails', (req, res) => {
+    const emails = Array.isArray(req.body.emails) ? req.body.emails : [];
+    try {
+      db.run('BEGIN');
+      db.run('DELETE FROM notification_emails');
+      for (const email of emails) {
+        if (typeof email === 'string' && email.includes('@')) {
+          db.run('INSERT OR IGNORE INTO notification_emails (email) VALUES (?)', [email.trim().toLowerCase()]);
+        }
+      }
+      db.run('COMMIT');
+      persist(db);
+      res.json({ success: true });
+    } catch (e) {
+      try { db.run('ROLLBACK'); } catch {}
+      res.status(500).json({ error: 'Failed to save notification emails', details: e?.message || e });
+    }
+  });
+
 
   // Ensure at least one business exists (after helpers available)
   try {
@@ -1510,6 +1547,10 @@ function mapDoc(r) {
 }
 
 function bootstrapSchema(db) {
+  db.run(`CREATE TABLE IF NOT EXISTS notification_emails (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE
+  );`);
   try { db.run('PRAGMA foreign_keys = ON'); } catch {}
   db.run(`CREATE TABLE IF NOT EXISTS businesses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

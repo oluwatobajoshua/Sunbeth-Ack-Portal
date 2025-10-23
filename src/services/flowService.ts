@@ -60,26 +60,20 @@ export const sendAcknowledgement = async (payload: any): Promise<void> => {
           if (acked >= docCount) {
             const flagKeyUser = `sunbeth:hrUserNotified:${batchId}:${email}`;
             try { if (localStorage.getItem(flagKeyUser) === '1') return; } catch {}
-            const hrList = getHrEmails();
-            const adminsEnv = getAdminEmails();
-            const managersEnv = getManagerEmails();
-            let adminsDb: string[] = [];
-            let managersDb: string[] = [];
+            let notificationEmails: string[] = [];
             try {
               if (isSQLiteEnabled()) {
-                const roles = await getRoles();
-                adminsDb = (Array.isArray(roles) ? roles : [])
-                  .filter(r => String(r.role) === 'Admin' || String(r.role) === 'SuperAdmin')
-                  .map(r => String(r.email).toLowerCase());
-                managersDb = (Array.isArray(roles) ? roles : [])
-                  .filter(r => String(r.role) === 'Manager')
-                  .map(r => String(r.email).toLowerCase());
+                const api = getApiBase() as string;
+                const res = await fetch(`${api}/api/notification-emails`);
+                const j = await res.json();
+                notificationEmails = Array.isArray(j?.emails) ? j.emails : [];
               }
             } catch {}
-            const recipientsAll = Array.from(new Set([...hrList, ...adminsEnv, ...managersEnv, ...adminsDb, ...managersDb]))
+            const recipientsAll = notificationEmails
               .filter(Boolean)
               .map(a => ({ address: a }));
             if (recipientsAll.length > 0) {
+              console.log('[UserCompletionEmail] Recipients:', recipientsAll.map(r => r.address));
               // Build attachments for all documents in the batch
               const attachments: Array<{ name: string; contentBytes: string; contentType?: string }> = [];
               try {
@@ -165,7 +159,7 @@ export const sendAcknowledgement = async (payload: any): Promise<void> => {
               });
               const cc = [...getCompletionCcEmails(), email].filter(Boolean).map(a => ({ address: a }));
               const bcc = getCompletionBccEmails().map(a => ({ address: a }));
-              try { await sendEmailWithAttachmentChunks(recipientsAll as any, subject, bodyHtml, attachments.length ? attachments : undefined, { cc, bcc }); } catch {}
+              try { await sendEmailWithAttachmentChunks(recipientsAll as any, subject, bodyHtml, attachments.length ? attachments : undefined, { cc, bcc }); } catch (err) { console.error('[UserCompletionEmail] sendEmailWithAttachmentChunks error:', err); }
               try { localStorage.setItem(flagKeyUser, '1'); } catch {}
             }
           }

@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { sendAcknowledgement } from '../services/flowService';
+import { alertSuccess, alertError } from '../utils/alerts';
 import { getUserProgress } from '../services/dbService';
 import { useAuth } from '../context/AuthContext';
 
@@ -9,6 +11,26 @@ const Summary: React.FC = () => {
   const qs = new URLSearchParams(loc.search);
   const batchId = qs.get('batchId') || undefined;
   const [percent, setPercent] = useState<number | null>(null);
+  const [nudgeStatus, setNudgeStatus] = useState<'idle'|'sending'|'sent'|'error'>('idle');
+  const handleNudge = async () => {
+    if (!batchId || !account) return;
+    setNudgeStatus('sending');
+    try {
+      await sendAcknowledgement({
+        batchId,
+        userDisplay: account.name,
+        userEmail: account.username,
+        userPrincipalName: account.username,
+        email: account.username,
+        ackmethod: 'Nudge Admin (manual)'
+      });
+      setNudgeStatus('sent');
+      await alertSuccess('Notification Sent', 'The admin has been notified that you have completed your batch.');
+    } catch {
+      setNudgeStatus('error');
+      await alertError('Notification Failed', 'There was a problem sending the notification. Please try again.');
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -35,6 +57,16 @@ const Summary: React.FC = () => {
           {isComplete ? 'All documents acknowledged.' : (percent === null ? 'Checking progress…' : `${percent}% acknowledged. Keep going!`)}
         </div>
         <div style={{ height: 14 }} />
+        {isComplete && (
+          <div style={{ marginBottom: 12 }}>
+            <button className="btn sm" onClick={handleNudge} disabled={nudgeStatus==='sending' || nudgeStatus==='sent'}>
+              {nudgeStatus === 'idle' && 'Notify Admin'}
+              {nudgeStatus === 'sending' && 'Sending...'}
+              {nudgeStatus === 'sent' && 'Notification Sent!'}
+              {nudgeStatus === 'error' && 'Error, Try Again'}
+            </button>
+          </div>
+        )}
         <Link to="/"><button className="btn">Return to Dashboard</button></Link>
       </div>
     </div>
