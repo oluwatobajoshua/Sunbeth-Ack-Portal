@@ -114,6 +114,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
       navigate('/', { replace: true });
     }
   }, [account, location.pathname, navigate]);
+  const showAside = !!(account && (location.pathname === '/' || location.pathname.startsWith('/dashboard')));
   return (
     <>
       {/* Global busy overlay (dancing logo) */}
@@ -159,12 +160,12 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
         )}
       </header>
 
-      <div className={`wrap ${!account ? 'landing-centered' : ''}`}>
+      <div className={`wrap ${!account ? 'landing-centered' : ''} ${!showAside ? 'centered' : ''}`}>
         <div className="grid">
           <main>
             {children}
           </main>
-          {account && (
+          {showAside && (
             <aside>
               <div className="card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

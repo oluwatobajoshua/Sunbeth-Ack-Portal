@@ -1,9 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useFeatureFlags } from '../context/FeatureFlagsContext';
 
 const Landing: React.FC = () => {
   const { login } = useAuth();
+  const navigate = require('react-router-dom').useNavigate();
+  const { externalSupport, loaded } = useFeatureFlags();
+  const [signingIn, setSigningIn] = useState(false);
   const [variant, setVariant] = useState<string>(() => { try { return localStorage.getItem('landing_variant') || 'regular'; } catch { return 'regular'; } });
   useEffect(() => {
     const read = () => { try { setVariant(localStorage.getItem('landing_variant') || 'regular'); } catch { /* noop */ } };
@@ -29,7 +33,22 @@ const Landing: React.FC = () => {
             </ul>
 
             <div style={{ marginTop: 22, display: 'flex', gap: 10 }}>
-              <button className="btn sm" onClick={() => login()}>Sign in to get started</button>
+              <button
+                className="btn sm"
+                onClick={() => {
+                  // If external support is disabled, skip the gateway and start SSO immediately
+                  if (loaded && !externalSupport) {
+                    if (!signingIn) { setSigningIn(true); }
+                    login();
+                  } else {
+                    navigate('/login');
+                  }
+                }}
+                disabled={loaded && !externalSupport && signingIn}
+                aria-busy={loaded && !externalSupport && signingIn}
+              >
+                {loaded && !externalSupport && signingIn ? 'Opening Microsoft sign-in…' : 'Sign in to get started'}
+              </button>
               <Link to="/about"><button className="btn ghost sm" type="button">Learn more</button></Link>
             </div>
           </div>

@@ -56,12 +56,13 @@ const Modal: React.FC<ModalProps> = ({ open, onClose, title, children, width = 6
         ref={containerRef}
         className="card"
         style={{
-          width: isSmall ? '100%' : width,
-          maxWidth: isSmall ? '100%' : maxWidth,
+          width: isSmall ? '90vw' : width,
+          maxWidth: isSmall ? '90vw' : maxWidth,
           height: isSmall ? '95vh' : 'auto',
           maxHeight: '95vh',
           overflowY: 'auto',
           padding: 16,
+          borderRadius: 12
         }}
         onClick={e => e.stopPropagation()}
       >

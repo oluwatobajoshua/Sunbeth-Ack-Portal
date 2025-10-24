@@ -1,3 +1,4 @@
+// ...existing code...
 /*
   Minimal SQLite API using sql.js (pure WASM, no native build). 
   - DB file: ./data/sunbeth.db (created if missing)
@@ -81,6 +82,78 @@ const DB_PATH = path.join(DATA_DIR, 'sunbeth.db');
 const PORT = process.env.PORT || 4000;
 
 async function start() {
+  // ...existing code...
+
+  // --- External User Auth: Password Hashing ---
+  const bcrypt = require('bcrypt');
+  const BCRYPT_ROUNDS = 12;
+  // --- Password Reset for External Users ---
+  // In-memory store for reset tokens (for demo; use DB in production)
+  const passwordResetTokens = new Map(); // email -> { token, expiresAt }
+  // --- MFA (TOTP) for External Users ---
+  const { authenticator } = require('otplib');
+  // In-memory store for onboarding tokens (for demo; use DB in production)
+  // --- Basic auth hardening helpers (rate limiting, lockouts, audit) ---
+  // Per-identifier fixed-window rate limiter (simple, in-memory)
+  const makeRateLimiter = (limit, windowMs) => {
+    const store = new Map(); // key -> { count, windowStart }
+    return {
+      allow(key) {
+        const k = String(key || '');
+        const now = Date.now();
+        const rec = store.get(k) || { count: 0, windowStart: now };
+        if (now - rec.windowStart >= windowMs) {
+          rec.count = 0;
+          rec.windowStart = now;
+        }
+        rec.count += 1;
+        store.set(k, rec);
+        return rec.count <= limit;
+      },
+      getRemaining(key) {
+        const rec = store.get(String(key || ''));
+        return rec ? Math.max(0, limit - rec.count) : limit;
+      }
+    };
+  };
+  const limiters = {
+    loginByEmail: makeRateLimiter(20, 15 * 60 * 1000), // 20 per 15m per email
+    loginByIp: makeRateLimiter(100, 15 * 60 * 1000),    // 100 per 15m per IP
+    resetByEmail: makeRateLimiter(5, 60 * 1000),        // 5 per minute per email
+    resetByIp: makeRateLimiter(30, 60 * 1000),          // 30 per minute per IP
+    mfaByEmail: makeRateLimiter(10, 5 * 60 * 1000),     // 10 per 5m per email
+    mfaByIp: makeRateLimiter(60, 5 * 60 * 1000)         // 60 per 5m per IP
+  };
+  // Simple login failure tracker for temporary lockouts
+  const failedLogins = new Map(); // email -> { count, lockUntil, windowStart }
+  const LOGIN_FAIL_LIMIT = 5;
+  const LOGIN_FAIL_WINDOW = 15 * 60 * 1000; // 15 minutes
+  const LOCKOUT_MS = 15 * 60 * 1000;
+  function isLocked(email) {
+    const e = String(email || '').toLowerCase();
+    const rec = failedLogins.get(e);
+    return !!(rec && rec.lockUntil && rec.lockUntil > Date.now());
+  }
+  function recordLoginFailure(email) {
+    const e = String(email || '').toLowerCase();
+    const now = Date.now();
+    const rec = failedLogins.get(e) || { count: 0, windowStart: now, lockUntil: 0 };
+    if (now - rec.windowStart >= LOGIN_FAIL_WINDOW) {
+      rec.count = 0;
+      rec.windowStart = now;
+    }
+    rec.count += 1;
+    if (rec.count >= LOGIN_FAIL_LIMIT) {
+      rec.lockUntil = now + LOCKOUT_MS;
+    }
+    failedLogins.set(e, rec);
+    return rec;
+  }
+  function clearLoginFailures(email) {
+    try { failedLogins.delete(String(email || '').toLowerCase()); } catch {}
+  }
+
+  // Placeholder for moved external user routes (now relocated after app init)
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   const SQL = await initSqlJs();
 
@@ -117,6 +190,19 @@ async function start() {
     return rows;
   };
   const one = (sql, params = []) => all(sql, params)[0] || null;
+
+  // --- Audit helper ---
+  function audit(req, event, email, result, details) {
+    try {
+      const ts = new Date().toISOString();
+      const ip = (req && (req.ip || req.headers['x-forwarded-for'])) ? String(req.ip || req.headers['x-forwarded-for']) : '';
+      const ua = req && req.get ? String(req.get('User-Agent') || '') : '';
+      const info = details ? JSON.stringify(details).slice(0, 2000) : null;
+      db.run('INSERT INTO audit_logs (ts, event, email, ip, ua, result, details) VALUES (?, ?, ?, ?, ?, ?, ?)', [ts, String(event), String(email || '').toLowerCase(), ip, ua, String(result), info]);
+    } catch (e) {
+      // non-fatal
+    }
+  }
 
   // Seed DB roles from environment (.env) for Admins/Managers (idempotent)
   try {
@@ -216,8 +302,470 @@ async function start() {
       }
       return originalStatus(code);
     };
-    
     next();
+  });
+
+  // Settings helpers (simple key/value via app_settings)
+  const getSetting = (k, fallback = null) => {
+    try { const r = one('SELECT value FROM app_settings WHERE key=?', [String(k)]); return r ? r.value : fallback; } catch { return fallback; }
+  };
+  const setSetting = (k, v) => { try { db.run('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', [String(k), String(v)]); persist(db); return true; } catch { return false; } };
+
+  // --- External User Helpers & Routes ---
+  const multer = require('multer');
+  const upload = multer({ storage: multer.memoryStorage() });
+  const csvParse = require('csv-parse/sync');
+  const crypto = require('crypto');
+  // In-memory store for onboarding tokens (for demo; use DB in production)
+  const onboardingTokens = new Map(); // email -> { token, expiresAt }
+  async function sendOnboardingEmail(email, name, link) {
+    // TODO: Integrate with Microsoft Graph/email provider
+    console.log(`[ONBOARDING EMAIL] To: ${email}, Name: ${name}, Link: ${link}`);
+    return Promise.resolve();
+  }
+
+  app.get('/api/external-users/search', (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    try {
+      const q = (req.query.q || '').toString().trim().toLowerCase();
+      let sql = 'SELECT id, email, name, phone, status, created_at, last_login, mfa_enabled FROM external_users';
+      let params = [];
+      if (q) {
+        sql += ' WHERE LOWER(email) LIKE ? OR LOWER(name) LIKE ? OR LOWER(phone) LIKE ?';
+        params = [`%${q}%`, `%${q}%`, `%${q}%`];
+      }
+      sql += ' ORDER BY created_at DESC LIMIT 100';
+      const rows = all(sql, params);
+      res.json({ users: rows });
+    } catch (e) {
+      res.status(500).json({ error: 'search_failed', details: e.message });
+    }
+  });
+
+  app.post('/api/external-users/request-reset', async (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    try {
+      const { email } = req.body || {};
+      if (!email) return res.status(400).json({ error: 'missing_email' });
+      // Rate limiting by email and IP
+      const ip = req.ip;
+      if (!limiters.resetByEmail.allow(String(email).toLowerCase()) || !limiters.resetByIp.allow(ip)) {
+        audit(req, 'password_reset_request', email, 'rate_limited', null);
+        return res.status(429).json({ error: 'rate_limited' });
+      }
+      const user = one('SELECT * FROM external_users WHERE LOWER(email)=LOWER(?)', [String(email).trim().toLowerCase()]);
+      if (!user) { audit(req, 'password_reset_request', email, 'not_found', null); return res.status(404).json({ error: 'user_not_found' }); }
+      const token = crypto.randomBytes(32).toString('hex');
+      const expiresAt = Date.now() + 1000 * 60 * 60; // 1 hour
+      passwordResetTokens.set(String(email).trim().toLowerCase(), { token, expiresAt });
+      const link = `https://your-frontend-url.com/reset-password?email=${encodeURIComponent(email)}&token=${token}`;
+      await sendOnboardingEmail(email, user.name || '', link);
+      audit(req, 'password_reset_request', email, 'sent', null);
+      return res.json({ ok: true });
+    } catch (e) {
+      try { audit(req, 'password_reset_request', req?.body?.email, 'error', { message: e.message }); } catch {}
+      res.status(500).json({ error: 'request_reset_failed', details: e.message });
+    }
+  });
+
+  app.post('/api/external-users/reset-password', async (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    try {
+      const { email, token, password } = req.body || {};
+      if (!email || !token || !password) return res.status(400).json({ error: 'missing_fields' });
+      const rec = passwordResetTokens.get(String(email).trim().toLowerCase());
+      if (!rec || rec.token !== token || Date.now() > rec.expiresAt) {
+        audit(req, 'password_reset', email, 'invalid_or_expired', null);
+        return res.status(400).json({ error: 'invalid_or_expired_token' });
+      }
+      if (!/^.{8,}$/.test(password) || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+        audit(req, 'password_reset', email, 'weak_password', null);
+        return res.status(400).json({ error: 'weak_password' });
+      }
+      const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+      db.run('UPDATE external_users SET password_hash=?, status=? WHERE LOWER(email)=LOWER(?)', [hash, 'active', email]);
+      passwordResetTokens.delete(String(email).trim().toLowerCase());
+      audit(req, 'password_reset', email, 'ok', null);
+      return res.json({ ok: true });
+    } catch (e) {
+      try { audit(req, 'password_reset', req?.body?.email, 'error', { message: e.message }); } catch {}
+      res.status(500).json({ error: 'reset_password_failed', details: e.message });
+    }
+  });
+
+  app.post('/api/external-users/mfa/setup', (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: 'missing_email' });
+    const user = one('SELECT * FROM external_users WHERE LOWER(email)=LOWER(?)', [String(email).trim().toLowerCase()]);
+    if (!user) { audit(req, 'mfa_setup', email, 'user_not_found', null); return res.status(404).json({ error: 'user_not_found' }); }
+    const secret = authenticator.generateSecret();
+    const otpauth = authenticator.keyuri(email, 'Sunbeth', secret);
+    db.run('UPDATE external_users SET mfa_secret=? WHERE id=?', [secret, user.id]);
+    audit(req, 'mfa_setup', email, 'ok', null);
+    return res.json({ secret, otpauth });
+  });
+
+  app.post('/api/external-users/mfa/verify', (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    const { email, code } = req.body || {};
+    if (!email || !code) return res.status(400).json({ error: 'missing_fields' });
+    const ip = req.ip;
+    if (!limiters.mfaByEmail.allow(String(email).toLowerCase()) || !limiters.mfaByIp.allow(ip)) {
+      return res.status(429).json({ error: 'rate_limited' });
+    }
+    const user = one('SELECT * FROM external_users WHERE LOWER(email)=LOWER(?)', [String(email).trim().toLowerCase()]);
+    if (!user || !user.mfa_secret) { audit(req, 'mfa_verify', email, 'user_or_secret_not_found', null); return res.status(404).json({ error: 'user_or_secret_not_found' }); }
+    const valid = authenticator.check(code, user.mfa_secret);
+    if (!valid) { audit(req, 'mfa_verify', email, 'invalid_code', null); return res.status(401).json({ error: 'invalid_code' }); }
+    db.run('UPDATE external_users SET mfa_enabled=1 WHERE id=?', [user.id]);
+    audit(req, 'mfa_verify', email, 'ok', null);
+    return res.json({ ok: true });
+  });
+
+  app.post('/api/external-users/mfa/disable', (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: 'missing_email' });
+    const user = one('SELECT * FROM external_users WHERE LOWER(email)=LOWER(?)', [String(email).trim().toLowerCase()]);
+    if (!user) { audit(req, 'mfa_disable', email, 'user_not_found', null); return res.status(404).json({ error: 'user_not_found' }); }
+    db.run('UPDATE external_users SET mfa_enabled=0, mfa_secret=NULL WHERE id=?', [user.id]);
+    audit(req, 'mfa_disable', email, 'ok', null);
+    return res.json({ ok: true });
+  });
+
+  app.post('/api/external-users/login', async (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    try {
+      const { email, password } = req.body || {};
+      if (!email || !password) return res.status(400).json({ error: 'missing_fields' });
+      const ip = req.ip;
+      // Lockout check
+      if (isLocked(email)) {
+        audit(req, 'login', email, 'locked', null);
+        return res.status(429).json({ error: 'account_locked_temp' });
+      }
+      // Rate limit by email and IP
+      if (!limiters.loginByEmail.allow(String(email).toLowerCase()) || !limiters.loginByIp.allow(ip)) {
+        audit(req, 'login', email, 'rate_limited', null);
+        return res.status(429).json({ error: 'rate_limited' });
+      }
+      const user = one('SELECT * FROM external_users WHERE LOWER(email)=LOWER(?)', [String(email).trim().toLowerCase()]);
+      if (!user) { recordLoginFailure(email); audit(req, 'login', email, 'invalid_user', null); return res.status(401).json({ error: 'invalid_credentials' }); }
+      if (!user.password_hash) return res.status(403).json({ error: 'password_not_set', onboarding: true });
+      const match = await bcrypt.compare(password, user.password_hash);
+      if (!match) { const rec = recordLoginFailure(email); audit(req, 'login', email, rec?.lockUntil && rec.lockUntil > Date.now() ? 'locked' : 'invalid_password', null); return res.status(401).json({ error: 'invalid_credentials' }); }
+      // Success: clear failures
+      clearLoginFailures(email);
+      if (user.mfa_enabled) {
+        audit(req, 'login', email, 'mfa_required', null);
+        return res.json({ mfaRequired: true });
+      }
+      db.run('UPDATE external_users SET last_login=? WHERE id=?', [new Date().toISOString(), user.id]);
+      audit(req, 'login', email, 'ok', null);
+      return res.json({ ok: true, email: user.email, name: user.name });
+    } catch (e) {
+      try { audit(req, 'login', req?.body?.email, 'error', { message: e.message }); } catch {}
+      res.status(500).json({ error: 'login_failed', details: e.message });
+    }
+  });
+
+  app.post('/api/external-users/set-password', async (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    try {
+      const { email, token, password } = req.body || {};
+      if (!email || !token || !password) return res.status(400).json({ error: 'missing_fields' });
+      const rec = onboardingTokens.get(String(email).trim().toLowerCase());
+      if (!rec || rec.token !== token || Date.now() > rec.expiresAt) {
+        audit(req, 'onboard_set_password', email, 'invalid_or_expired', null);
+        return res.status(400).json({ error: 'invalid_or_expired_token' });
+      }
+      if (!/^.{8,}$/.test(password) || !/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+        audit(req, 'onboard_set_password', email, 'weak_password', null);
+        return res.status(400).json({ error: 'weak_password' });
+      }
+      const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+      db.run('UPDATE external_users SET password_hash=?, status=? WHERE LOWER(email)=LOWER(?)', [hash, 'active', email]);
+      onboardingTokens.delete(String(email).trim().toLowerCase());
+      audit(req, 'onboard_set_password', email, 'ok', null);
+      return res.json({ ok: true });
+    } catch (e) {
+      try { audit(req, 'onboard_set_password', req?.body?.email, 'error', { message: e.message }); } catch {}
+      res.status(500).json({ error: 'set_password_failed', details: e.message });
+    }
+  });
+
+  app.post('/api/external-users/bulk-upload', upload.single('file'), async (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    try {
+      if (!req.file) return res.status(400).json({ error: 'no_file_uploaded' });
+      const isExcel = /\.xlsx$|\.xls$/i.test(req.file.originalname || '') || (req.file.mimetype && /sheet|excel/i.test(req.file.mimetype));
+      let records;
+      if (isExcel) {
+        try {
+          const XLSX = require('xlsx');
+          const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+          const sheetName = wb.SheetNames.find(n => /externalusers|users/i.test(n)) || wb.SheetNames[0];
+          const data = XLSX.utils.sheet_to_json(wb.Sheets[sheetName] || {}, { defval: '' });
+          records = Array.isArray(data) ? data : [];
+        } catch (e) {
+          return res.status(400).json({ error: 'invalid_excel', details: e.message });
+        }
+      } else {
+        try {
+          const content = req.file.buffer.toString('utf8');
+          records = csvParse.parse(content, { columns: true, skip_empty_lines: true });
+        } catch (e) {
+          return res.status(400).json({ error: 'invalid_csv', details: e.message });
+        }
+      }
+      if (!Array.isArray(records) || records.length === 0) return res.status(400).json({ error: 'no_records_found' });
+      let inserted = 0, updated = 0, errors = [], onboarding = [];
+      db.run('BEGIN');
+      try {
+        for (const row of records) {
+          const email = String(row.email || '').trim().toLowerCase();
+          if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+            errors.push({ row, error: 'invalid_email' });
+            continue;
+          }
+          const existing = one('SELECT id FROM external_users WHERE LOWER(email)=LOWER(?)', [email]);
+          const now = new Date().toISOString();
+          if (existing) {
+            db.run('UPDATE external_users SET name=?, phone=?, status=?, last_login=last_login WHERE id=?', [row.name || '', row.phone || '', row.status || 'active', existing.id]);
+            updated++;
+          } else {
+            db.run('INSERT INTO external_users (email, name, phone, password_hash, status, created_at) VALUES (?, ?, ?, ?, ?, ?)', [email, row.name || '', row.phone || '', '', row.status || 'invited', now]);
+            inserted++;
+            const token = crypto.randomBytes(32).toString('hex');
+            const expiresAt = Date.now() + 1000 * 60 * 60 * 48; // 48 hours
+            onboardingTokens.set(email, { token, expiresAt });
+            const baseUrl = (process.env.FRONTEND_BASE_URL || req.headers.origin || (`${req.protocol}://${req.headers.host}`));
+            const link = `${String(baseUrl).replace(/\/$/,'')}/onboard?email=${encodeURIComponent(email)}&token=${token}`;
+            onboarding.push({ email, name: row.name || '', link });
+          }
+        }
+        db.run('COMMIT');
+      } catch (e) {
+        db.run('ROLLBACK');
+        return res.status(500).json({ error: 'db_error', details: e.message });
+      }
+      try {
+        await Promise.all(onboarding.map(u => sendOnboardingEmail(u.email, u.name, u.link)));
+      } catch (e) {
+        console.error('Onboarding email send failed', e);
+      }
+      res.json({ inserted, updated, errors, onboarding: onboarding.map(u => ({ email: u.email, sent: true })) });
+    } catch (e) {
+      res.status(500).json({ error: 'bulk_upload_failed', details: e.message });
+    }
+  });
+  
+  // Bulk upload Businesses (CSV or Excel)
+  app.post('/api/businesses/bulk-upload', upload.single('file'), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: 'no_file_uploaded' });
+      const isExcel = /\.xlsx$|\.xls$/i.test(req.file.originalname || '') || (req.file.mimetype && /sheet|excel/i.test(req.file.mimetype));
+      let records;
+      if (isExcel) {
+        try {
+          const XLSX = require('xlsx');
+          const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+          const sheetName = wb.SheetNames.find(n => /business/i.test(n)) || wb.SheetNames[0];
+          const data = XLSX.utils.sheet_to_json(wb.Sheets[sheetName] || {}, { defval: '' });
+          records = Array.isArray(data) ? data : [];
+        } catch (e) {
+          return res.status(400).json({ error: 'invalid_excel', details: e.message });
+        }
+      } else {
+        try {
+          const content = req.file.buffer.toString('utf8');
+          records = csvParse.parse(content, { columns: true, skip_empty_lines: true });
+        } catch (e) {
+          return res.status(400).json({ error: 'invalid_csv', details: e.message });
+        }
+      }
+      if (!Array.isArray(records) || records.length === 0) return res.status(400).json({ error: 'no_records_found' });
+      let inserted = 0, updated = 0, errors = [];
+      db.run('BEGIN');
+      try {
+        for (const row of records) {
+          let name = String(row.name || row.Name || '').trim();
+          let code = (row.code != null ? String(row.code) : '').trim();
+          if (!name && !code) { errors.push({ row, error: 'name_or_code_required' }); continue; }
+          const description = (row.description != null ? String(row.description) : '').trim() || null;
+          let isActiveRaw = row.isActive;
+          const isActive = (String(isActiveRaw).toLowerCase() === 'true' || String(isActiveRaw) === '1') ? 1 : (String(isActiveRaw).toLowerCase() === 'false' || String(isActiveRaw) === '0' ? 0 : 1);
+          // Upsert by code if provided, else by name
+          let existing = null;
+          if (code) existing = one('SELECT id FROM businesses WHERE code=?', [code]);
+          if (!existing && name) existing = one('SELECT id FROM businesses WHERE LOWER(name)=LOWER(?)', [name]);
+          if (existing) {
+            db.run('UPDATE businesses SET name=?, code=?, isActive=?, description=? WHERE id=?', [name || (existing.name || ''), code || null, isActive, description, existing.id]);
+            updated++;
+          } else {
+            if (!name) name = code;
+            db.run('INSERT INTO businesses (name, code, isActive, description) VALUES (?, ?, ?, ?)', [name, code || null, isActive, description]);
+            inserted++;
+          }
+        }
+        db.run('COMMIT');
+      } catch (e) {
+        db.run('ROLLBACK');
+        return res.status(500).json({ error: 'db_error', details: e.message });
+      }
+      persist(db);
+      res.json({ inserted, updated, errors });
+    } catch (e) {
+      res.status(500).json({ error: 'bulk_upload_failed', details: e.message });
+    }
+  });
+
+  // --- Audit Logs Endpoint ---
+  // List audit logs with optional filters
+  app.get('/api/audit-logs', (req, res) => {
+    try {
+      const q = String(req.query.q || '').trim().toLowerCase();
+      const event = String(req.query.event || '').trim().toLowerCase();
+      const email = String(req.query.email || '').trim().toLowerCase();
+      const result = String(req.query.result || '').trim().toLowerCase();
+      const ip = String(req.query.ip || '').trim().toLowerCase();
+      const since = String(req.query.since || '').trim(); // ISO date
+      const until = String(req.query.until || '').trim(); // ISO date
+      const limit = Math.max(0, Math.min(500, Number(req.query.limit || 100)));
+      const offset = Math.max(0, Number(req.query.offset || 0));
+
+      const conds = [];
+      const params = [];
+      if (q) {
+        conds.push('(LOWER(event) LIKE ? OR LOWER(email) LIKE ? OR LOWER(result) LIKE ? OR LOWER(ip) LIKE ? OR LOWER(ua) LIKE ? OR LOWER(details) LIKE ?)');
+        params.push(`%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`, `%${q}%`);
+      }
+      if (event) { conds.push('LOWER(event)=?'); params.push(event); }
+      if (email) { conds.push('LOWER(email)=?'); params.push(email); }
+      if (result) { conds.push('LOWER(result)=?'); params.push(result); }
+      if (ip) { conds.push('LOWER(ip)=?'); params.push(ip); }
+      if (since) { conds.push('ts>=?'); params.push(since); }
+      if (until) { conds.push('ts<=?'); params.push(until); }
+      const where = conds.length ? ('WHERE ' + conds.join(' AND ')) : '';
+      const rows = all(`SELECT id, ts, event, email, ip, ua, result, details FROM audit_logs ${where} ORDER BY id DESC LIMIT ${limit} OFFSET ${offset}`, params);
+      res.json({ logs: rows });
+    } catch (e) {
+      res.status(500).json({ error: 'list_audit_failed', details: e?.message || String(e) });
+    }
+  });
+
+  // --- Admin: External Users Management ---
+  // List external users with optional filters
+  app.get('/api/external-users', (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    try {
+      const q = String(req.query.q || '').trim().toLowerCase();
+      const status = String(req.query.status || '').trim().toLowerCase();
+      const limit = Math.max(0, Math.min(200, Number(req.query.limit || 50)));
+      const offset = Math.max(0, Number(req.query.offset || 0));
+      const conds = [];
+      const params = [];
+      if (q) {
+        conds.push('(LOWER(email) LIKE ? OR LOWER(name) LIKE ? OR LOWER(phone) LIKE ?)');
+        params.push(`%${q}%`, `%${q}%`, `%${q}%`);
+      }
+      if (status) {
+        conds.push('LOWER(status)=?');
+        params.push(status);
+      }
+      const where = conds.length ? ('WHERE ' + conds.join(' AND ')) : '';
+      const rows = all(`SELECT id, email, name, phone, status, mfa_enabled, created_at, last_login FROM external_users ${where} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`, params);
+      res.json({ users: rows });
+    } catch (e) {
+      res.status(500).json({ error: 'list_failed', details: e?.message || String(e) });
+    }
+  });
+
+  // Invite a single external user (upsert) and send onboarding email
+  app.post('/api/external-users/invite', async (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    try {
+      const { email, name = '', phone = '' } = req.body || {};
+      const e = String(email || '').trim().toLowerCase();
+      if (!e || !e.includes('@')) return res.status(400).json({ error: 'invalid_email' });
+      const existing = one('SELECT id, status FROM external_users WHERE LOWER(email)=LOWER(?)', [e]);
+      const now = new Date().toISOString();
+      if (existing) {
+        // Update basic fields, keep password hash
+        db.run('UPDATE external_users SET name=?, phone=?, status=status WHERE id=?', [name, phone, existing.id]);
+      } else {
+        db.run('INSERT INTO external_users (email, name, phone, password_hash, status, created_at) VALUES (?, ?, ?, ?, ?, ?)', [e, name, phone, '', 'invited', now]);
+      }
+      // Generate onboarding token and send email
+  const token = crypto.randomBytes(32).toString('hex');
+      const expiresAt = Date.now() + 1000 * 60 * 60 * 48; // 48 hours
+      onboardingTokens.set(e, { token, expiresAt });
+  const baseUrl = (process.env.FRONTEND_BASE_URL || req.headers.origin || (`${req.protocol}://${req.headers.host}`));
+  const link = `${String(baseUrl).replace(/\/$/,'')}/onboard?email=${encodeURIComponent(e)}&token=${token}`;
+      await sendOnboardingEmail(e, name || '', link);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: 'invite_failed', details: e?.message || String(e) });
+    }
+  });
+
+  // Resend onboarding invite (regenerate token)
+  app.post('/api/external-users/resend', async (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    try {
+      const { email } = req.body || {};
+      const e = String(email || '').trim().toLowerCase();
+      if (!e || !e.includes('@')) return res.status(400).json({ error: 'invalid_email' });
+      const user = one('SELECT * FROM external_users WHERE LOWER(email)=LOWER(?)', [e]);
+      if (!user) return res.status(404).json({ error: 'user_not_found' });
+  const token = crypto.randomBytes(32).toString('hex');
+      const expiresAt = Date.now() + 1000 * 60 * 60 * 48; // 48 hours
+      onboardingTokens.set(e, { token, expiresAt });
+  const baseUrl = (process.env.FRONTEND_BASE_URL || req.headers.origin || (`${req.protocol}://${req.headers.host}`));
+  const link = `${String(baseUrl).replace(/\/$/,'')}/onboard?email=${encodeURIComponent(e)}&token=${token}`;
+      await sendOnboardingEmail(e, user.name || '', link);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: 'resend_failed', details: e?.message || String(e) });
+    }
+  });
+
+  // Update a user's basic fields (admin)
+  app.patch('/api/external-users/:id', (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid_id' });
+      const allowed = ['name','phone','status','mfa_enabled'];
+      const updates = [];
+      const params = [];
+      for (const k of allowed) {
+        if (Object.prototype.hasOwnProperty.call(req.body || {}, k)) {
+          updates.push(`${k}=?`);
+          params.push(k === 'mfa_enabled' ? (req.body[k] ? 1 : 0) : req.body[k]);
+        }
+      }
+      if (updates.length === 0) return res.json({ ok: true, updated: 0 });
+      params.push(id);
+      db.run(`UPDATE external_users SET ${updates.join(', ')} WHERE id=?`, params);
+      res.json({ ok: true, updated: 1 });
+    } catch (e) {
+      res.status(500).json({ error: 'update_failed', details: e?.message || String(e) });
+    }
+  });
+
+  // Delete an external user (admin)
+  app.delete('/api/external-users/:id', (req, res) => {
+    if (getSetting('external_support_enabled','0') !== '1') return res.status(404).json({ error: 'not_found' });
+    try {
+      const id = Number(req.params.id);
+      if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid_id' });
+      db.run('DELETE FROM external_users WHERE id=?', [id]);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: 'delete_failed', details: e?.message || String(e) });
+    }
   });
 
   // Notification Emails API
@@ -753,6 +1301,25 @@ async function start() {
     }
   });
 
+  // Settings API: External support toggle
+  app.get('/api/settings/external-support', (_req, res) => {
+    try {
+      const enabled = getSetting('external_support_enabled','0') === '1';
+      res.json({ enabled });
+    } catch (e) {
+      res.status(500).json({ error: 'failed' });
+    }
+  });
+  app.put('/api/settings/external-support', (req, res) => {
+    try {
+      const enabled = !!(req.body && (req.body.enabled === true || req.body.enabled === 'true' || req.body.enabled === 1 || req.body.enabled === '1'));
+      const ok = setSetting('external_support_enabled', enabled ? '1' : '0');
+      if (!ok) return res.status(500).json({ error: 'save_failed' });
+      res.json({ enabled });
+    } catch (e) {
+      res.status(500).json({ error: 'failed' });
+    }
+  });
   // Businesses
   app.get('/api/businesses', (_req, res) => {
     const rows = all('SELECT id, name, code, isActive, description FROM businesses ORDER BY name');
@@ -1547,6 +2114,19 @@ function mapDoc(r) {
 }
 
 function bootstrapSchema(db) {
+  db.run(`CREATE TABLE IF NOT EXISTS external_users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    name TEXT,
+    phone TEXT,
+    password_hash TEXT NOT NULL,
+    mfa_enabled INTEGER DEFAULT 0,
+    mfa_secret TEXT,
+    status TEXT DEFAULT 'active',
+    created_at TEXT DEFAULT (datetime('now')),
+    last_login TEXT
+  );`);
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS ux_external_users_email ON external_users(LOWER(email));`);
   db.run(`CREATE TABLE IF NOT EXISTS notification_emails (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL UNIQUE
@@ -1603,6 +2183,23 @@ function bootstrapSchema(db) {
     FOREIGN KEY (batchId) REFERENCES batches(id) ON DELETE CASCADE,
     FOREIGN KEY (documentId) REFERENCES documents(id) ON DELETE CASCADE
   );`);
+  // App settings key/value store
+  db.run(`CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );`);
+
+  // Audit log table for auth/security events
+  db.run(`CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT,
+    event TEXT,
+    email TEXT,
+    ip TEXT,
+    ua TEXT,
+    result TEXT,
+    details TEXT
+  );`);
 
   // Indexes and uniqueness constraints
   db.run(`CREATE INDEX IF NOT EXISTS idx_documents_batch ON documents(batchId);`);
@@ -1639,6 +2236,7 @@ function bootstrapSchema(db) {
 
   // Seed a default business for convenience
   db.run("INSERT INTO businesses (name, code, isActive, description) VALUES ('Default Business', 'DEF', 1, 'Auto-created')");
+  try { db.run("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('external_support_enabled','0')"); } catch {}
 }
 
 // Best-effort migrations for existing databases (adds new columns if missing)
@@ -1646,6 +2244,20 @@ function migrateSchema(db) {
   try { db.run("ALTER TABLE documents ADD COLUMN driveId TEXT"); } catch {}
   try { db.run("ALTER TABLE documents ADD COLUMN itemId TEXT"); } catch {}
   try { db.run("ALTER TABLE documents ADD COLUMN source TEXT"); } catch {}
+  // Ensure audit_logs table exists for older databases
+  try { db.run(`CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT,
+    event TEXT,
+    email TEXT,
+    ip TEXT,
+    ua TEXT,
+    result TEXT,
+    details TEXT
+  );`); } catch {}
+  // Ensure app_settings table and default flag
+  try { db.run(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`); } catch {}
+  try { db.run("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('external_support_enabled','0')"); } catch {}
   // roles table added in later versions
   try { db.run(`CREATE TABLE IF NOT EXISTS roles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

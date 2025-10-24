@@ -4,6 +4,7 @@ import { MsalProvider } from '@azure/msal-react';
 import { msalInstance } from './services/msalConfig';
 import { AuthProvider } from './context/AuthContext';
 import { RBACProvider } from './context/RBACContext';
+import { FeatureFlagsProvider } from './context/FeatureFlagsContext';
 import { AppRoutes, RouteChangeLogger } from './routes';
 import Layout from './Layout';
 
@@ -11,12 +12,14 @@ const App: React.FC = () => {
   const tree = (
     <AuthProvider>
       <RBACProvider>
-        <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true } as any}>
-          <RouteChangeLogger />
-          <Layout>
-            <AppRoutes />
-          </Layout>
-        </BrowserRouter>
+        <FeatureFlagsProvider>
+          <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true } as any}>
+            <RouteChangeLogger />
+            <Layout>
+              <AppRoutes />
+            </Layout>
+          </BrowserRouter>
+        </FeatureFlagsProvider>
       </RBACProvider>
     </AuthProvider>
   );

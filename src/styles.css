@@ -35,7 +35,11 @@ header{background:var(--primary);color:#fff;padding:14px 22px;display:flex;justi
 
 /* Center landing content when user not signed in */
 .wrap.landing-centered{min-height:calc(100vh - 86px);display:flex;align-items:center}
-.wrap.landing-centered .grid{width:100%;max-width:980px;margin:0 auto}
+.wrap.landing-centered .grid{width:100%;max-width:980px;margin:0 auto;grid-template-columns:1fr}
+
+/* Center content on authenticated pages without aside */
+.wrap.centered .grid{width:100%;max-width:980px;margin:0 auto;grid-template-columns:1fr}
+.wrap.centered main{width:100%}
 
 /* Hero entrance animation */
 .hero{opacity:0;transform:translateY(14px);animation:heroIn 640ms cubic-bezier(.2,.9,.2,1) forwards}
@@ -45,5 +49,17 @@ header{background:var(--primary);color:#fff;padding:14px 22px;display:flex;justi
 .hero.compact .hero-title{font-size:22px}
 .hero.compact .hero-grid{grid-template-columns:1fr 320px}
 .hero.compact .hero-lead{font-size:14px}
+
+
+
+/* Mobile-first global tweaks */
+@media (max-width: 600px){
+	.container{max-width:100%;padding:0 12px}
+	.card{padding:14px;border-radius:10px}
+	.btn{padding:10px 14px;border-radius:10px;font-size:15px}
+	input, select, textarea{width:100%; max-width:100%}
+	table{font-size:13px}
+	th, td{padding:8px}
+}
 
 

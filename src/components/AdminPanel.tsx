@@ -88,6 +88,7 @@ import { GraphUser, GraphGroup, getUsers, getGroups, getOrganizationStructure, U
 import AnalyticsDashboard from './AnalyticsDashboard';
 import { exportAnalyticsExcel } from '../utils/excelExport';
 import Modal from './Modal';
+import { useFeatureFlags } from '../context/FeatureFlagsContext';
 import { sendEmail, sendEmailWithAttachmentChunks, buildBatchEmail, fetchAsBase64 /*, sendTeamsDirectMessage*/ } from '../services/notificationService';
 import { getGraphToken } from '../services/authTokens';
 import { runAuthAndGraphCheck, Step } from '../diagnostics/health';
@@ -101,12 +102,17 @@ import { busyPush, busyPop } from '../utils/busy';
 import { getRoles, createRole, deleteRole, type DbRole } from '../services/dbService';
 import { isSQLiteEnabled, getApiBase, isAdminLight, useAdminModalSelectors } from '../utils/runtimeConfig';
 import RBACMatrix from './RBACMatrix';
+import ExternalUsersManager from './ExternalUsersManager';
+import BusinessesBulkUpload from './BusinessesBulkUpload';
+import { downloadAllTemplatesExcel, downloadExternalUsersTemplateExcel, downloadExternalUsersTemplateCsv, downloadBusinessesTemplateExcel, downloadBusinessesTemplateCsv } from '../utils/importTemplates';
+import AuditLogs from './AuditLogs';
 
 // Enhanced Admin Settings Component
 type AdminSettingsProps = { canEdit: boolean };
 
 const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
   const { account } = useAuthCtx();
+  const { refresh: refreshFlags } = useFeatureFlags();
   const storageKey = 'admin_settings';
   const [settings, setSettings] = useState({
     enableUpload: false,
@@ -116,6 +122,12 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
     allowBulkAssignment: true,
     requireApproval: false
   });
+
+  // External support flag (server-backed)
+  const [extEnabled, setExtEnabled] = useState<boolean>(false);
+  const [extLoading, setExtLoading] = useState<boolean>(false);
+  const [extSaving, setExtSaving] = useState<boolean>(false);
+  const apiBase = (getApiBase() as string) || '';
 
 
   useEffect(() => {
@@ -128,6 +140,23 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
     } catch {}
   }, []);
 
+  // Load external support flag
+  useEffect(() => {
+    (async () => {
+      try {
+        setExtLoading(true);
+        if (!apiBase) { setExtEnabled(false); return; }
+        const res = await fetch(`${apiBase}/api/settings/external-support`, { cache: 'no-store' });
+        const j = await res.json();
+        setExtEnabled(!!j?.enabled);
+      } catch {
+        setExtEnabled(false);
+      } finally {
+        setExtLoading(false);
+      }
+    })();
+  }, [apiBase]);
+
   const apply = () => {
     if (!canEdit) return;
     try {
@@ -135,6 +164,22 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
   Alerts.toast('Settings saved');
     } catch (e) {
       console.warn(e);
+    }
+  };
+
+  const saveExternalSupport = async (value: boolean) => {
+    if (!canEdit || !apiBase) return;
+    setExtSaving(true);
+    try {
+      const res = await fetch(`${apiBase}/api/settings/external-support`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: value }) });
+      if (!res.ok) throw new Error('save_failed');
+      setExtEnabled(value);
+      try { await refreshFlags(); } catch {}
+      Alerts.toast(`External user support ${value ? 'enabled' : 'disabled'}`);
+    } catch {
+      Alerts.toast('Failed to save external support setting');
+    } finally {
+      setExtSaving(false);
     }
   };
 
@@ -179,6 +224,19 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <h3 style={{ margin: 0, fontSize: 16 }}>System Settings</h3>
+      {/* External Support Toggle */}
+      <div className="card" style={{ padding: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div style={{ fontWeight: 700 }}>External User Support</div>
+            <div className="small muted">When disabled, external login, onboarding, and related UI/routes are hidden.</div>
+          </div>
+          <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={!!extEnabled} disabled={extLoading || extSaving || !canEdit} onChange={e => saveExternalSupport(e.target.checked)} />
+            <span>{extEnabled ? 'Enabled' : 'Disabled'}</span>
+          </label>
+        </div>
+      </div>
       
       <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -908,7 +966,8 @@ const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[
 const AdminPanel: React.FC = () => {
   const { role, canSeeAdmin, canEditAdmin, isSuperAdmin, perms } = useRBAC();
   const { account } = useAuthCtx();
-  const [activeTab, setActiveTab] = useState<'overview' | 'settings' | 'rbac' | 'manage' | 'batch' | 'analytics' | 'notificationEmails'>('overview');
+  const { externalSupport } = useFeatureFlags();
+  const [activeTab, setActiveTab] = useState<'overview' | 'settings' | 'rbac' | 'manage' | 'batch' | 'analytics' | 'notificationEmails' | 'audit'>('overview');
   const [editingBatchId, setEditingBatchId] = useState<string | null>(null);
   const [originalRecipientEmails, setOriginalRecipientEmails] = useState<Set<string>>(new Set());
   const [originalDocUrls, setOriginalDocUrls] = useState<Set<string>>(new Set());
@@ -1058,6 +1117,10 @@ const AdminPanel: React.FC = () => {
       // Analytics only if allowed (Super Admin always)
       ...((isSuperAdmin || perms?.viewAnalytics) ? [{ id: 'analytics', label: 'Analytics', icon: '📈' } as any] : [])
     );
+    // Audit Logs (Super Admin or viewDebugLogs permission)
+    if (isSuperAdmin || perms?.viewDebugLogs) {
+      base.push({ id: 'audit', label: 'Audit Logs', icon: '🛡️' } as any);
+    }
     return base;
   })();
   const sqliteEnabled = isSQLiteEnabled();
@@ -1708,6 +1771,29 @@ const AdminPanel: React.FC = () => {
 
         {activeTab === 'manage' && (
           <div style={{ display: 'grid', gap: 16 }}>
+            {/* Import Templates quick actions */}
+            <div className="card" style={{ padding: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h3 style={{ margin: '0 0 4px 0', fontSize: 16 }}>Import Templates</h3>
+                  <div className="small muted">Download enterprise-ready templates for bulk operations.</div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn sm" onClick={downloadAllTemplatesExcel} title="Download a workbook containing all import templates">All (Excel)</button>
+                  <button className="btn ghost xs" onClick={downloadExternalUsersTemplateExcel}>External Users (Excel)</button>
+                  <button className="btn ghost xs" onClick={downloadExternalUsersTemplateCsv}>External Users (CSV)</button>
+                  <button className="btn ghost xs" onClick={downloadBusinessesTemplateExcel}>Businesses (Excel)</button>
+                  <button className="btn ghost xs" onClick={downloadBusinessesTemplateCsv}>Businesses (CSV)</button>
+                </div>
+              </div>
+            </div>
+            {(externalSupport && (isSuperAdmin || perms?.manageRoles || perms?.manageRecipients)) && (
+              <div className="card" style={{ padding: 16 }}>
+                <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>External Users</h3>
+                <div className="small muted" style={{ marginBottom: 8 }}>Invite, bulk upload, update, disable, or delete external users.</div>
+                <ExternalUsersManager canEdit={canEditAdmin} />
+              </div>
+            )}
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Batches</h3>
               <div className="small muted" style={{ marginBottom: 8 }}>View, edit, or delete batches. Deleting a batch removes its documents, recipients, and acknowledgements.</div>
@@ -1717,7 +1803,11 @@ const AdminPanel: React.FC = () => {
               <div className="card" style={{ padding: 16 }}>
                 <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Businesses</h3>
                 <div className="small muted" style={{ marginBottom: 8 }}>Create, edit, or delete businesses. Deleting a business will unassign it from any recipients mapped to it.</div>
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <BusinessesBulkUploadSection />
+                  <div className="divider" />
                 <BusinessesManager canEdit={canEditAdmin} />
+                </div>
               </div>
             )}
           </div>
@@ -2017,6 +2107,12 @@ const AdminPanel: React.FC = () => {
           </div>
         )}
 
+        {activeTab === 'audit' && (
+          <div>
+            <AuditLogs />
+          </div>
+        )}
+
         {activeTab === 'analytics' && <AnalyticsDashboard />}
       </div>
 
@@ -2094,6 +2190,13 @@ const AdminPanel: React.FC = () => {
         isVisible={showDebugConsole}
         onClose={() => setShowDebugConsole(false)}
       />
+    </div>
+  );
+};
+const BusinessesBulkUploadSection: React.FC = () => {
+  return (
+    <div>
+      <BusinessesBulkUpload />
     </div>
   );
 };

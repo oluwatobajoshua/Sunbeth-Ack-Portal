@@ -15,6 +15,7 @@ import { busyPush, busyPop } from '../utils/busy';
 import Toast from './Toast';
 import { getDocumentsByBatch, getUserProgress, getAcknowledgedDocIds, getDocumentById } from '../services/dbService';
 import type { Doc } from '../types/models';
+import { getApiBase as getApiBaseCfg } from '../utils/runtimeConfig';
 
 const DocumentReader: React.FC = () => {
   const { id } = useParams();
@@ -26,6 +27,9 @@ const DocumentReader: React.FC = () => {
   const [progressText, setProgressText] = useState<string>('—');
   const [alreadyAcked, setAlreadyAcked] = useState<boolean>(false);
   const [ackCheckReady, setAckCheckReady] = useState<boolean>(false);
+  const userName = (account?.name || account?.username || '').toString();
+  const [needGraphAuth, setNeedGraphAuth] = useState<boolean>(false);
+  const [refreshKey, setRefreshKey] = useState<number>(0);
 
   const navigate = useNavigate();
   const location = useLocation();
@@ -146,21 +150,9 @@ const DocumentReader: React.FC = () => {
 
   const currentDoc = (Array.isArray(docs) && index >= 0 && index < docs.length) ? docs[index] : undefined as any;
   const rawUrl = currentDoc?.toba_fileurl || (currentDoc as any)?.url || '';
-  const rawBase = process.env.REACT_APP_API_BASE || '';
-  // Resolve API base robustly to avoid requests hitting the frontend origin by mistake
-  let apiBase = '' as string;
-  if (/^https?:\/\//i.test(rawBase)) {
-    apiBase = rawBase.replace(/\/$/, '');
-  } else {
-    // Try a configured base in localStorage (optional manual override)
-    const stored = (() => { try { return localStorage.getItem('sunbeth:apiBase') || ''; } catch { return ''; }})();
-    if (stored && /^https?:\/\//i.test(stored)) {
-      apiBase = stored.replace(/\/$/, '');
-    } else {
-      // Default fallback for local dev even if not on localhost hostname
-      apiBase = 'http://localhost:4000';
-    }
-  }
+  // Resolve API base via runtime config; if not set, use same-origin relative '/api'
+  const cfgBase = getApiBaseCfg();
+  const apiBase = cfgBase ? cfgBase : '';
 
   const [docUrl, setDocUrl] = useState<string>(rawUrl);
   const [contentType, setContentType] = useState<string>('');
@@ -173,6 +165,7 @@ const DocumentReader: React.FC = () => {
         const driveId = (currentDoc as any)?.toba_driveid || (currentDoc as any)?.driveId;
         const itemId = (currentDoc as any)?.toba_itemid || (currentDoc as any)?.itemId;
         const source = (currentDoc as any)?.toba_source || (currentDoc as any)?.source;
+        setNeedGraphAuth(false);
         if (apiBase && source === 'sharepoint' && driveId && itemId) {
           try {
             const at = await getToken?.(['Files.Read.All', 'Sites.Read.All']);
@@ -181,7 +174,10 @@ const DocumentReader: React.FC = () => {
               return;
             }
           } catch {
-            // fall through to URL proxy
+            // Token not available; prompt user to grant Graph access
+            setNeedGraphAuth(true);
+            setDocUrl('');
+            return;
           }
         }
         // If looks like a SharePoint URL but IDs are missing, try Graph shares API by URL
@@ -195,7 +191,10 @@ const DocumentReader: React.FC = () => {
               return;
             }
           } catch {
-            // ignore and fall back
+            // Token not available; do not fall back to unauthenticated proxy (would fail). Show hint.
+            setNeedGraphAuth(true);
+            setDocUrl('');
+            return;
           }
         }
         // Fallback: simple URL proxy
@@ -206,7 +205,7 @@ const DocumentReader: React.FC = () => {
       }
     })();
   // re-evaluate when the selected doc changes or apiBase changes
-  }, [currentDoc, apiBase]);
+  }, [currentDoc, apiBase, refreshKey]);
 
   // Attempt a quick proxy diagnostics call to learn the content-type so we can pick the correct viewer
   useEffect(() => {
@@ -245,6 +244,15 @@ const DocumentReader: React.FC = () => {
           <Link to="/"><button className="btn ghost sm">← Back</button></Link>
         </div>
         <div className="viewer" style={{ marginTop: 12 }}>
+          {needGraphAuth && (
+            <div className="small" style={{ marginBottom: 8, background: '#fff8e1', border: '1px solid #ffe0b2', padding: 10, borderRadius: 8 }}>
+              This document is stored in SharePoint. We need Microsoft Graph access to preview it here.
+              <button className="btn ghost xs" style={{ marginLeft: 8 }}
+                onClick={async () => { try { await getToken?.(['Files.Read.All','Sites.Read.All']); setRefreshKey(k => k + 1); } catch {} }}>
+                Grant access
+              </button>
+            </div>
+          )}
           {docUrl ? (
             isPdf ? (
               <PdfViewer url={docUrl} />
@@ -257,7 +265,7 @@ const DocumentReader: React.FC = () => {
             )
           ) : (
             <div className="muted small" style={{ padding: 12, textAlign: 'center' }}>
-              No document URL found for this item.
+              {needGraphAuth ? 'Please grant access to preview this SharePoint document.' : 'No document URL found for this item.'}
             </div>
           )}
           {(docUrl || rawUrl) && (
@@ -275,7 +283,12 @@ const DocumentReader: React.FC = () => {
         {/* Render the accept controls only when acknowledgment check has completed and doc is not already acknowledged */}
         {ackCheckReady && !alreadyAcked && (
           <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
-            <label className="small"><input type="checkbox" onChange={e => setAck(e.target.checked)} /> I have read and understood this document.</label>
+            <label className="small">
+              <input type="checkbox" onChange={e => setAck(e.target.checked)} />{' '}
+              {userName
+                ? (<><span>I </span><strong>{userName}</strong><span> have read and understood this document.</span></>)
+                : 'I have read and understood this document.'}
+            </label>
             <div style={{ flex: 1 }} />
             <button className="btn accent sm" id="btnAccept" onClick={onAccept} disabled={!ack}>I Accept</button>
           </div>

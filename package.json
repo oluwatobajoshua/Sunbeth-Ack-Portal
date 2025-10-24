@@ -9,18 +9,20 @@
     "@microsoft/mgt-msal2-provider": "^4.6.0",
     "@microsoft/mgt-react": "^4.6.0",
     "axios": "^1.7.2",
+    "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
+    "docx-preview": "0.3.7",
     "express": "^5.1.0",
+    "otplib": "^12.0.1",
+    "pdfjs-dist": "^3.11.174",
     "react": "^18.2.0",
     "react-dom": "^18.3.1",
+    "react-pdf": "^7.7.2",
     "react-router-dom": "^6.22.3",
     "react-scripts": "5.0.1",
-    "react-pdf": "^7.7.2",
-    "pdfjs-dist": "^3.11.174",
-    "docx-preview": "0.3.7",
-    "xlsx": "^0.18.5",
     "sql.js": "^1.13.0",
-    "sweetalert2": "^11.26.3"
+    "sweetalert2": "^11.26.3",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.1",
@@ -35,12 +37,15 @@
     "ajv": "^6.12.6",
     "ajv-keywords": "^3.5.2",
     "typedoc": "^0.25.13",
-    "typescript": "4.9.5"
+    "typescript": "4.9.5",
+    "serve": "^14.2.1"
   },
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
+    "preview": "serve -s build -l 5000",
+    "serve": "serve -s build -l 5000",
     "fix:sourcemaps": "node scripts/remove-docx-preview-sourcemaps.cjs",
     "postinstall": "node scripts/remove-docx-preview-sourcemaps.cjs",
     "api": "node server/index.js",
