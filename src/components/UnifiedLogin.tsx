@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { useExternalAuth } from '../context/ExternalAuthContext';
 
 // Unified Login Page for M365 and External Users
 const UnifiedLogin: React.FC = () => {
@@ -9,6 +10,7 @@ const UnifiedLogin: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const { login: setExternalSession } = useExternalAuth();
 
   // Handles login for both M365 and external users
   const handleLogin = async (e: React.FormEvent) => {
@@ -34,8 +36,8 @@ const UnifiedLogin: React.FC = () => {
         navigate(`/mfa?email=${encodeURIComponent(email)}`);
         return;
       }
-      // Otherwise, login successful
-      // TODO: Store token/session as needed
+  // Otherwise, login successful: store external session
+  setExternalSession({ email: j?.email || email, name: j?.name || null });
       navigate('/');
     } catch (e: any) {
       setError(e.message || 'Login failed');

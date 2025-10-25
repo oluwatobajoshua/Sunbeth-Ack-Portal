@@ -36,8 +36,8 @@
     "@types/react-router-dom": "^5.3.3",
     "ajv": "^6.12.6",
     "ajv-keywords": "^3.5.2",
-    "typedoc": "^0.25.13",
-    "typescript": "4.9.5",
+  "typedoc": "^0.25.13",
+  "typescript": "^5.4.5",
     "serve": "^14.2.1"
   },
   "scripts": {

@@ -562,7 +562,7 @@ const UserGroupSelector: React.FC<{ onSelectionChange: (selection: any) => void 
 
 // Simple Document List Editor (SQLite-only)
 import { useAuth as useAuthCtx } from '../context/AuthContext';
-type SimpleDoc = { title: string; url: string; version?: number; requiresSignature?: boolean; driveId?: string; itemId?: string; source?: 'sharepoint' | 'url' };
+type SimpleDoc = { title: string; url: string; version?: number; requiresSignature?: boolean; driveId?: string; itemId?: string; source?: 'sharepoint' | 'url' | 'local'; localFileId?: number | null; localUrl?: string | null };
 const DocumentListEditor: React.FC<{ onChange: (docs: SimpleDoc[]) => void; initial?: SimpleDoc[] }>
   = ({ onChange, initial = [] }) => {
   const [docs, setDocs] = useState<SimpleDoc[]>(initial);
@@ -962,6 +962,83 @@ const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[
   );
 };
 
+// Server Library Picker (deduped, server-hosted files)
+const LocalLibraryPicker: React.FC<{ onAdd: (docs: SimpleDoc[]) => void }> = ({ onAdd }) => {
+  const apiBase = (getApiBase() as string) || '';
+  const [loading, setLoading] = useState(false);
+  const [files, setFiles] = useState<Array<{ id: number; name: string; url: string; size?: number; uploadedAt?: string; mime?: string }>>([]);
+  const [q, setQ] = useState('');
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+
+  const load = async () => {
+    if (!apiBase) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`${apiBase}/api/library/list${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+  const j = await res.json();
+  const arr = Array.isArray(j?.files) ? j.files : [];
+  setFiles(arr.map((r: any) => ({ id: Number(r.id), name: String(r.name || 'file'), url: `${apiBase}${r.url}`, size: Number(r.size) || undefined, uploadedAt: r.uploadedAt || r.uploaded_at || undefined })));
+    } catch {
+      setFiles([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); }, [q]);
+
+  const toggle = (id: number) => {
+    setSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  };
+  const addSelected = () => {
+    const chosen = files.filter(f => selected.has(f.id));
+    if (chosen.length === 0) return;
+    const docs: SimpleDoc[] = chosen.map(f => ({ title: f.name, url: f.url, version: 1, requiresSignature: false, source: 'local', localFileId: f.id, localUrl: f.url }));
+    onAdd(docs);
+    setSelected(new Set());
+  };
+
+  const fmtSize = (n?: number) => {
+    if (!n || n <= 0) return '';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024*1024) return `${(n/1024).toFixed(1)} KB`;
+    return `${(n/1024/1024).toFixed(1)} MB`;
+  };
+
+  return (
+    <div style={{ border: '1px solid #e0e0e0', borderRadius: 8, padding: 16 }}>
+      <h3 style={{ margin: '0 0 12px 0', fontSize: 16 }}>Library (Server)</h3>
+      <div className="small muted" style={{ marginBottom: 8 }}>Pick from previously saved files (recent first). Served from the app server for reliability.</div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, marginBottom: 8 }}>
+        <input placeholder="Search library..." value={q} onChange={e => setQ(e.target.value)} />
+        <button className="btn ghost sm" onClick={load} disabled={loading}>Refresh</button>
+      </div>
+      {loading ? <div className="small muted">Loading...</div> : (
+        files.length === 0 ? <div className="small muted">No files found.</div> : (
+          <div style={{ maxHeight: 240, overflowY: 'auto', display: 'grid', gap: 6 }}>
+            {files.map(f => (
+              <label key={f.id} className="small" style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 8, alignItems: 'center', padding: '6px 8px', borderBottom: '1px solid #f5f5f5' }}>
+                <input type="checkbox" checked={selected.has(f.id)} onChange={() => toggle(f.id)} />
+                <div style={{ overflow: 'hidden' }}>
+                  <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
+                  <div className="muted" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <span>{fmtSize(f.size)}</span>
+                    {f.uploadedAt && <span>• {new Date(f.uploadedAt).toLocaleString()}</span>}
+                    <a href={f.url} target="_blank" rel="noreferrer">Preview ↗</a>
+                  </div>
+                </div>
+                <span className="badge">local</span>
+              </label>
+            ))}
+          </div>
+        )
+      )}
+      <div style={{ marginTop: 8, textAlign: 'right' }}>
+        <button className="btn sm" onClick={addSelected} disabled={selected.size === 0}>Add selected</button>
+      </div>
+    </div>
+  );
+};
+
 // Main Admin Panel Component
 const AdminPanel: React.FC = () => {
   const { role, canSeeAdmin, canEditAdmin, isSuperAdmin, perms } = useRBAC();
@@ -999,6 +1076,50 @@ const AdminPanel: React.FC = () => {
   const [showDebugConsole, setShowDebugConsole] = useState(false);
   const [usersModalOpen, setUsersModalOpen] = useState(false);
   const [docsModalOpen, setDocsModalOpen] = useState(false);
+  // Import progress (SharePoint -> Server Library)
+  const [importBusy, setImportBusy] = useState(false);
+  const [importTotal, setImportTotal] = useState(0);
+  const [importDone, setImportDone] = useState(0);
+  const [importRows, setImportRows] = useState<Array<{ name: string; status: 'saved' | 'deduped' | 'failed' }>>([]);
+
+  // Merge helper to unify SharePoint + Local backups into a single logical selection
+  const mergeDocuments = (prev: SimpleDoc[], incoming: SimpleDoc[]): SimpleDoc[] => {
+    const keyOf = (d: SimpleDoc) => {
+      if (d.driveId && d.itemId) return `sp:${d.driveId}:${d.itemId}`;
+      if (d.localFileId != null) return `local:${d.localFileId}`;
+      const name = (d.title || '').toLowerCase().trim();
+      const url = (d.url || '').split('?')[0].toLowerCase().trim();
+      return name || url || Math.random().toString(36).slice(2);
+    };
+    const map = new Map<string, SimpleDoc>();
+    const mergeOne = (base: SimpleDoc, extra: SimpleDoc): SimpleDoc => {
+      const prefersSharePoint = (x: SimpleDoc) => x.source === 'sharepoint' || /sharepoint\.com\//i.test(x.url);
+      // Prefer SP URL as canonical when available
+      const canonicalUrl = prefersSharePoint(extra) ? extra.url : prefersSharePoint(base) ? base.url : (base.url || extra.url);
+      return {
+        title: (extra.title && extra.title.length > (base.title || '').length) ? extra.title : base.title || extra.title || 'Document',
+        url: canonicalUrl,
+        version: extra.version ?? base.version,
+        requiresSignature: (extra.requiresSignature ?? base.requiresSignature) || false,
+        driveId: extra.driveId || base.driveId,
+        itemId: extra.itemId || base.itemId,
+        source: (prefersSharePoint(extra) || prefersSharePoint(base)) ? 'sharepoint' : (extra.source || base.source),
+        localFileId: (extra.localFileId != null ? extra.localFileId : base.localFileId) ?? null,
+        localUrl: extra.localUrl || base.localUrl || null
+      };
+    };
+    const upsert = (d: SimpleDoc) => {
+      const k = keyOf(d);
+      if (map.has(k)) {
+        map.set(k, mergeOne(map.get(k)!, d));
+      } else {
+        map.set(k, { ...d });
+      }
+    };
+    prev.forEach(upsert);
+    incoming.forEach(upsert);
+    return Array.from(map.values());
+  };
 
   const requiredScopes = ['User.Read','User.Read.All','Group.Read.All','Mail.Send'];
 
@@ -1062,6 +1183,71 @@ const AdminPanel: React.FC = () => {
     } catch (e) {
   showToast('Failed to expand groups for mapping', 'error');
     }
+  };
+  // Remove a selected document locally and in DB when editing existing batches
+  const removeSelectedDoc = async (idx: number) => {
+    const doc = batchForm.selectedDocuments[idx];
+    setBatchForm(prev => ({ ...prev, selectedDocuments: prev.selectedDocuments.filter((_, i) => i !== idx) }));
+    if (!editingBatchId || !doc) return;
+    const normalize = (u?: string | null) => (u || '').trim().toLowerCase().replace(/\/$/, '')
+      .replace(/\?.*$/, ''); // strip query for robust matching
+    const targetCanonical = normalize(doc.url);
+    const targetLocal = normalize(doc.localUrl || undefined);
+    const tryDeleteByIds = async (): Promise<boolean> => {
+      try {
+        const base = (getApiBase() as string);
+        const res = await fetch(`${base}/api/batches/${encodeURIComponent(editingBatchId)}/documents`, { cache: 'no-store' });
+        const rows: any[] = await res.json().catch(() => []);
+        if (!Array.isArray(rows) || rows.length === 0) return false;
+        const candidateIds: number[] = [];
+        for (const r of rows) {
+          const rid = Number(r.id || r.toba_documentid || r.toba_id || r.ID);
+          if (!Number.isFinite(rid)) continue;
+          const rCanon = normalize(r.url || r.webUrl || r.toba_originalurl || r.toba_fileurl);
+          const rLocal = normalize(r.localUrl || r.toba_localurl);
+          const matchUrl = (!!targetCanonical && rCanon === targetCanonical) || (!!targetLocal && rCanon === targetLocal);
+          const matchLocal = (!!targetLocal && rLocal === targetLocal) || (!!targetCanonical && rLocal === targetCanonical);
+          const matchDrive = (doc.driveId && doc.itemId && (r.driveId === doc.driveId || r.toba_driveid === doc.driveId) && (r.itemId === doc.itemId || r.toba_itemid === doc.itemId));
+          const matchLocalId = (doc.localFileId != null) && ((r.localFileId ?? r.toba_localfileid) === doc.localFileId);
+          if (matchUrl || matchLocal || matchDrive || matchLocalId) {
+            candidateIds.push(rid);
+          }
+        }
+        if (candidateIds.length === 0) return false;
+        const del = await fetch(`${base}/api/batches/${encodeURIComponent(editingBatchId)}/documents`, {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: candidateIds })
+        });
+        if (!del.ok) return false;
+        // Update originals set if we know canonical
+        if (targetCanonical) {
+          setOriginalDocUrls(prev => { const p = new Set(prev); p.delete(targetCanonical); return p; });
+        }
+        return true;
+      } catch { return false; }
+    };
+    const tryDeleteByUrls = async (): Promise<boolean> => {
+      try {
+        const base = (getApiBase() as string);
+        const urls: string[] = [];
+        if (doc.url) urls.push(doc.url);
+        if (doc.localUrl && !urls.includes(doc.localUrl)) urls.push(doc.localUrl);
+        if (urls.length === 0) return false;
+        const del = await fetch(`${base}/api/batches/${encodeURIComponent(editingBatchId)}/documents`, {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ urls })
+        });
+        if (!del.ok) return false;
+        if (targetCanonical) {
+          setOriginalDocUrls(prev => { const p = new Set(prev); p.delete(targetCanonical); return p; });
+        }
+        return true;
+      } catch { return false; }
+    };
+    // Prefer id-based deletion for precision, fallback to URLs
+    const okById = await tryDeleteByIds();
+    if (okById) { showToast('Removed document from batch', 'success'); return; }
+    const okByUrl = await tryDeleteByUrls();
+    if (okByUrl) { showToast('Removed document from batch', 'success'); return; }
+    showToast('Removed locally, but server removal failed', 'warning');
   };
   // Maintain user -> business mapping by email
   const setUserBusiness = (emailOrUpn: string, businessId: number | null) => {
@@ -1265,7 +1451,9 @@ const AdminPanel: React.FC = () => {
         requiresSignature: !!d.requiresSignature,
         driveId: (d as any).driveId || null,
         itemId: (d as any).itemId || null,
-        source: (d as any).source || null
+        source: (d as any).source || null,
+        localFileId: (d as any).localFileId ?? null,
+        localUrl: (d as any).localUrl ?? null
       }));
       const recipientsPayloadAll = recipients.map(r => {
         const emailLower = (r.address || '').toLowerCase();
@@ -1533,7 +1721,9 @@ const AdminPanel: React.FC = () => {
         requiresSignature: !!(d.requiresSignature ?? d.toba_requiressignature),
         driveId: d.driveId || d.toba_driveid || undefined,
         itemId: d.itemId || d.toba_itemid || undefined,
-        source: d.source || d.toba_source || ((d.driveId || d.toba_driveid) ? 'sharepoint' : undefined)
+        source: d.source || d.toba_source || ((d.driveId || d.toba_driveid) ? 'sharepoint' : undefined),
+        localFileId: d.localFileId || d.toba_localfileid || null,
+        localUrl: d.localUrl || d.toba_localurl || null
       }));
       const selectedUsers = (recs || []).map((r: any) => ({ id: r.email || r.user || r.userPrincipalName || r.id || r.email, displayName: r.displayName || r.email, userPrincipalName: r.email, department: r.department, jobTitle: r.jobTitle } as any));
       const selectedGroups: GraphGroup[] = [];
@@ -1600,7 +1790,9 @@ const AdminPanel: React.FC = () => {
         requiresSignature: !!(d.requiresSignature ?? d.toba_requiressignature),
         driveId: d.driveId || d.toba_driveid || undefined,
         itemId: d.itemId || d.toba_itemid || undefined,
-        source: d.source || d.toba_source || ((d.driveId || d.toba_driveid) ? 'sharepoint' : undefined)
+        source: d.source || d.toba_source || ((d.driveId || d.toba_driveid) ? 'sharepoint' : undefined),
+        localFileId: d.localFileId || d.toba_localfileid || null,
+        localUrl: d.localUrl || d.toba_localurl || null
       }));
       const selectedUsers = (recs || []).map((r: any) => ({ id: r.email || r.user || r.userPrincipalName || r.id || r.email, displayName: r.displayName || r.email, userPrincipalName: r.email, department: r.department, jobTitle: r.jobTitle } as any));
       const selectedGroups: GraphGroup[] = [];
@@ -1896,18 +2088,107 @@ const AdminPanel: React.FC = () => {
             {!useModalSelectors ? (
               <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 24, marginBottom: 24 }}>
                 <UserGroupSelector onSelectionChange={(selection) => setBatchForm({...batchForm, selectedUsers: selection.users, selectedGroups: selection.groups})} />
-                <SharePointBrowser canUpload={!!(isSuperAdmin || perms?.uploadDocuments)} onDocumentSelect={(spDocs) => setBatchForm({
-                  ...batchForm,
-                  selectedDocuments: spDocs.map(d => ({
-                    title: d.name,
-                    url: d.webUrl,
-                    version: 1,
-                    requiresSignature: false,
-                    driveId: (d as any)?.parentReference?.driveId,
-                    itemId: (d as any)?.id,
-                    source: 'sharepoint'
-                  }))
-                })} />
+                {/* Library first (server-hosted), then SharePoint */}
+                {/* Import progress banner (inline) */}
+                {importBusy && (
+                  <div className="small" style={{ background: '#fff8e1', border: '1px solid #ffe0b2', padding: 8, borderRadius: 6 }}>
+                    Importing to Library... {importDone}/{importTotal}
+                    <div className="progressBar" aria-hidden="true" style={{ marginTop: 6 }}><i style={{ width: `${importTotal ? Math.round((importDone/importTotal)*100) : 0}%` }} /></div>
+                    {importRows.length > 0 && (
+                      <div style={{ marginTop: 6, maxHeight: 120, overflowY: 'auto', display: 'grid', gap: 4 }}>
+                        {importRows.map((r, i) => (
+                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
+                            <span className="badge" style={{ background: r.status==='failed'?'#f8d7da':(r.status==='deduped'?'#e2e3e5':'#d4edda'), color: '#333' }}>{r.status}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <LocalLibraryPicker onAdd={(docs) => setBatchForm(prev => ({
+                  ...prev,
+                  selectedDocuments: mergeDocuments(prev.selectedDocuments, docs)
+                }))} />
+                <SharePointBrowser canUpload={!!(isSuperAdmin || perms?.uploadDocuments)} onDocumentSelect={async (spDocs) => {
+                  // Import SharePoint selections to server library with progress/dedupe status
+                  try {
+                    const base = (getApiBase() as string) || '';
+                    const token = await getGraphToken(['Sites.Read.All','Files.Read.All']);
+                    setImportBusy(true); setImportTotal(spDocs.length); setImportDone(0); setImportRows([]);
+                    const imported: SimpleDoc[] = [];
+                    let dedupedCount = 0, failed = 0;
+                    for (const d of spDocs) {
+                      const driveId = (d as any)?.parentReference?.driveId;
+                      const itemId = (d as any)?.id;
+                      const name = d.name;
+                      if (!base || !driveId || !itemId || !token) {
+                        imported.push({ title: name, url: d.webUrl, version: 1, requiresSignature: false, driveId, itemId, source: 'sharepoint' });
+                        setImportDone(v => v + 1);
+                        setImportRows(rows => [...rows, { name, status: 'failed' }]);
+                        failed++;
+                        continue;
+                      }
+                      try {
+                        const res = await fetch(`${base}/api/library/save-graph`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify({ driveId, itemId, name }) });
+                        const j = await res.json().catch(() => null);
+                        const localUrl = j?.url ? `${base}${j.url}` : undefined;
+                        // Preserve original SharePoint link in url; store server copy in localUrl
+                        const doc: SimpleDoc = { title: name, url: d.webUrl, version: 1, requiresSignature: false, driveId, itemId, source: 'sharepoint', localFileId: j?.id ?? null, localUrl: localUrl || null };
+                        imported.push(doc);
+                        setImportRows(rows => [...rows, { name, status: j?.deduped ? 'deduped' : 'saved' }]);
+                        if (j?.deduped) dedupedCount++;
+                      } catch {
+                        imported.push({ title: name, url: d.webUrl, version: 1, requiresSignature: false, driveId, itemId, source: 'sharepoint', localFileId: null, localUrl: null });
+                        setImportRows(rows => [...rows, { name, status: 'failed' }]);
+                        failed++;
+                      } finally {
+                        setImportDone(v => v + 1);
+                      }
+                    }
+                    setBatchForm(prev => ({ ...prev, selectedDocuments: mergeDocuments(prev.selectedDocuments, imported) }));
+                    showToast(`Imported ${imported.length - failed} • deduped ${dedupedCount}${failed ? ` • failed ${failed}` : ''}`, failed ? 'warning' : 'success');
+                  } catch (e) {
+                    setBatchForm(prev => ({
+                      ...prev,
+                      selectedDocuments: mergeDocuments(prev.selectedDocuments, spDocs.map(d => ({ title: d.name, url: d.webUrl, version: 1, requiresSignature: false, driveId: (d as any)?.parentReference?.driveId, itemId: (d as any)?.id, source: 'sharepoint' })))
+                    }));
+                  } finally {
+                    setImportBusy(false);
+                  }
+                }} />
+                {/* Selected documents list with remove control */}
+                <div className="card" style={{ padding: 16 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>Selected Documents</div>
+                      <div className="small muted">{batchForm.selectedDocuments.length} document(s)</div>
+                    </div>
+                  </div>
+                  {batchForm.selectedDocuments.length === 0 ? (
+                    <div className="small muted">No documents selected yet. Use Library or SharePoint above.</div>
+                  ) : (
+                    <div style={{ maxHeight: 240, overflowY: 'auto', display: 'grid', gap: 6 }}>
+                      {batchForm.selectedDocuments.map((d, idx) => (
+                        <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'center' }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.title}</div>
+                            <div className="small" style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                              {d.source === 'sharepoint' && <span className="badge">sharepoint</span>}
+                              {d.localUrl && <span className="badge">local</span>}
+                              {d.source === 'sharepoint' && d.localUrl && <span className="badge" title="Server backup created">backed up</span>}
+                              {(d.localUrl || d.url) && (
+                                <a href={(d.localUrl || d.url)!} target="_blank" rel="noreferrer" className="small">View ↗</a>
+                              )}
+                            </div>
+                          </div>
+                          <button className="btn ghost sm" onClick={() => removeSelectedDoc(idx)} title="Remove from batch">✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 {/* Business Mapping */}
                 <div className="card" style={{ padding: 16 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
@@ -2123,19 +2404,109 @@ const AdminPanel: React.FC = () => {
           <Modal open={usersModalOpen} onClose={() => setUsersModalOpen(false)} title="Assign to Users & Groups" width={800}>
             <UserGroupSelector onSelectionChange={(selection) => setBatchForm({...batchForm, selectedUsers: selection.users, selectedGroups: selection.groups})} />
           </Modal>
-          <Modal open={docsModalOpen} onClose={() => setDocsModalOpen(false)} title="SharePoint Documents" width={920}>
-            <SharePointBrowser canUpload={!!(isSuperAdmin || perms?.uploadDocuments)} onDocumentSelect={(spDocs) => setBatchForm({
-              ...batchForm,
-              selectedDocuments: spDocs.map(d => ({
-                title: d.name,
-                url: d.webUrl,
-                version: 1,
-                requiresSignature: false,
-                driveId: (d as any)?.parentReference?.driveId,
-                itemId: (d as any)?.id,
-                source: 'sharepoint'
-              }))
-            })} />
+          <Modal open={docsModalOpen} onClose={() => setDocsModalOpen(false)} title="Documents" width={920}>
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
+              <div style={{ display: 'grid', gap: 16 }}>
+              {/* Import progress banner (modal) */}
+              {importBusy && (
+                <div className="small" style={{ background: '#fff8e1', border: '1px solid #ffe0b2', padding: 8, borderRadius: 6 }}>
+                  Importing to Library... {importDone}/{importTotal}
+                  <div className="progressBar" aria-hidden="true" style={{ marginTop: 6 }}><i style={{ width: `${importTotal ? Math.round((importDone/importTotal)*100) : 0}%` }} /></div>
+                  {importRows.length > 0 && (
+                    <div style={{ marginTop: 6, maxHeight: 120, overflowY: 'auto', display: 'grid', gap: 4 }}>
+                      {importRows.map((r, i) => (
+                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
+                          <span className="badge" style={{ background: r.status==='failed'?'#f8d7da':(r.status==='deduped'?'#e2e3e5':'#d4edda'), color: '#333' }}>{r.status}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <LocalLibraryPicker onAdd={(docs) => setBatchForm(prev => ({
+                ...prev,
+                selectedDocuments: mergeDocuments(prev.selectedDocuments, docs)
+              }))} />
+              <SharePointBrowser canUpload={!!(isSuperAdmin || perms?.uploadDocuments)} onDocumentSelect={async (spDocs) => {
+                try {
+                  const base = (getApiBase() as string) || '';
+                  const token = await getGraphToken(['Sites.Read.All','Files.Read.All']);
+                  setImportBusy(true); setImportTotal(spDocs.length); setImportDone(0); setImportRows([]);
+                  const imported: SimpleDoc[] = [];
+                  let dedupedCount = 0, failed = 0;
+                  for (const d of spDocs) {
+                    const driveId = (d as any)?.parentReference?.driveId;
+                    const itemId = (d as any)?.id;
+                    const name = d.name;
+                    if (!base || !driveId || !itemId || !token) {
+                      imported.push({ title: name, url: d.webUrl, version: 1, requiresSignature: false, driveId, itemId, source: 'sharepoint' });
+                      setImportDone(v => v + 1);
+                      setImportRows(rows => [...rows, { name, status: 'failed' }]);
+                      failed++;
+                      continue;
+                    }
+                    try {
+                      const res = await fetch(`${base}/api/library/save-graph`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify({ driveId, itemId, name }) });
+                      const j = await res.json().catch(() => null);
+                      const localUrl = j?.url ? `${base}${j.url}` : undefined;
+                      // Keep SharePoint link as canonical url; localUrl for server backup
+                      const doc: SimpleDoc = { title: name, url: d.webUrl, version: 1, requiresSignature: false, driveId, itemId, source: 'sharepoint', localFileId: j?.id ?? null, localUrl: localUrl || null };
+                      imported.push(doc);
+                      setImportRows(rows => [...rows, { name, status: j?.deduped ? 'deduped' : 'saved' }]);
+                      if (j?.deduped) dedupedCount++;
+                    } catch {
+                      imported.push({ title: name, url: d.webUrl, version: 1, requiresSignature: false, driveId, itemId, source: 'sharepoint', localFileId: null, localUrl: null });
+                      setImportRows(rows => [...rows, { name, status: 'failed' }]);
+                      failed++;
+                    } finally {
+                      setImportDone(v => v + 1);
+                    }
+                  }
+                  setBatchForm(prev => ({ ...prev, selectedDocuments: mergeDocuments(prev.selectedDocuments, imported) }));
+                  showToast(`Imported ${imported.length - failed} • deduped ${dedupedCount}${failed ? ` • failed ${failed}` : ''}`, failed ? 'warning' : 'success');
+                } catch (e) {
+                  setBatchForm(prev => ({
+                    ...prev,
+                    selectedDocuments: mergeDocuments(prev.selectedDocuments, spDocs.map(d => ({ title: d.name, url: d.webUrl, version: 1, requiresSignature: false, driveId: (d as any)?.parentReference?.driveId, itemId: (d as any)?.id, source: 'sharepoint' })))
+                  }));
+                } finally {
+                  setImportBusy(false);
+                }
+              }} />
+              </div>
+              {/* Right column: persistent selection panel */}
+              <div className="card" style={{ padding: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontWeight: 700 }}>Selected Documents</div>
+                    <div className="small muted">{batchForm.selectedDocuments.length} item(s)</div>
+                  </div>
+                </div>
+                {batchForm.selectedDocuments.length === 0 ? (
+                  <div className="small muted" style={{ marginTop: 6 }}>No documents selected yet.</div>
+                ) : (
+                  <div style={{ marginTop: 8, maxHeight: 440, overflowY: 'auto', display: 'grid', gap: 6 }}>
+                    {batchForm.selectedDocuments.map((d, idx) => (
+                      <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'center' }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.title}</div>
+                          <div className="small" style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                            {d.source === 'sharepoint' && <span className="badge">sharepoint</span>}
+                            {d.localUrl && <span className="badge">local</span>}
+                            {d.source === 'sharepoint' && d.localUrl && <span className="badge" title="Server backup created">backed up</span>}
+                            {(d.localUrl || d.url) && (
+                              <a href={(d.localUrl || d.url)!} target="_blank" rel="noreferrer" className="small">View ↗</a>
+                            )}
+                          </div>
+                        </div>
+                        <button className="btn ghost sm" onClick={() => removeSelectedDoc(idx)} title="Remove from batch">✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           </Modal>
         </>
       )}

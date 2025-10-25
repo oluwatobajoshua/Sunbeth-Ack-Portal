@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useExternalAuth } from '../context/ExternalAuthContext';
 
 const ExternalLogin: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -9,6 +10,7 @@ const ExternalLogin: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [search] = useSearchParams();
   const navigate = useNavigate();
+  const { login: setExternalSession } = useExternalAuth();
 
   React.useEffect(() => {
     const pre = search.get('email');
@@ -31,6 +33,8 @@ const ExternalLogin: React.FC = () => {
         navigate(`/mfa?email=${encodeURIComponent(email)}`);
         return;
       }
+      // Persist external user session
+      setExternalSession({ email: j?.email || email, name: j?.name || null });
       navigate('/');
     } catch (err: any) {
       const msg = String(err?.message || 'Login failed');

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { renderAsync } from 'docx-preview';
 
 interface DocxViewerProps {
-  url: string;
+  url: string | string[];
 }
 
 const DocxViewer: React.FC<DocxViewerProps> = ({ url }) => {
@@ -17,13 +17,32 @@ const DocxViewer: React.FC<DocxViewerProps> = ({ url }) => {
 
     (async () => {
       try {
-        const response = await fetch(url);
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        const urls = Array.isArray(url) ? url : [url];
+        // Helper to try a single URL with optional download=1 fallback
+        const tryOne = async (u: string): Promise<Blob> => {
+          const res = await fetch(u);
+          if (res.ok) return await res.blob();
+          // Try a download hint to avoid disposition or preview blockers
+          const sep = u.includes('?') ? '&' : '?';
+          const res2 = await fetch(`${u}${sep}download=1`);
+          if (!res2.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+          return await res2.blob();
+        };
+
+        let blob: Blob | null = null;
+        let lastError: any = null;
+        for (const u of urls) {
+          try {
+            blob = await tryOne(u);
+            if (blob) break;
+          } catch (e) {
+            lastError = e;
+          }
         }
-        
-        const blob = await response.blob();
-        
+        if (!blob) {
+          throw lastError || new Error('Failed to fetch document');
+        }
+
         if (mounted && containerRef.current) {
           // Clear previous content
           containerRef.current.innerHTML = '';

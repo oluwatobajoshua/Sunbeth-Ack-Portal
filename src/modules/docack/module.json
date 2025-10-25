@@ -1,0 +1,8 @@
+{
+  "name": "docack",
+  "title": "Document Acknowledgement",
+  "version": "0.1.0",
+  "adminRoute": "/admin/docack",
+  "homeRoute": "/",
+  "featureFlag": "module_docack_enabled"
+}

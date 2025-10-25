@@ -155,6 +155,7 @@ const DocumentReader: React.FC = () => {
   const apiBase = cfgBase ? cfgBase : '';
 
   const [docUrl, setDocUrl] = useState<string>(rawUrl);
+  const [backupUrl, setBackupUrl] = useState<string>('');
   const [contentType, setContentType] = useState<string>('');
 
   useEffect(() => {
@@ -166,17 +167,30 @@ const DocumentReader: React.FC = () => {
         const itemId = (currentDoc as any)?.toba_itemid || (currentDoc as any)?.itemId;
         const source = (currentDoc as any)?.toba_source || (currentDoc as any)?.source;
         setNeedGraphAuth(false);
+        // 0) Prefer server-hosted local files directly
+        const url0 = currentDoc?.toba_fileurl || (currentDoc as any)?.url || '';
+        const isLocalFile = typeof url0 === 'string' && ((apiBase && url0.startsWith(apiBase + '/api/files/')) || url0.startsWith('/api/files/'));
+        if (isLocalFile) {
+          setDocUrl(url0);
+          // fallback to original/canonical URL if local fails
+          const orig = (currentDoc as any)?.toba_originalurl || (currentDoc as any)?.url || '';
+          setBackupUrl(orig ? (apiBase ? `${apiBase}/api/proxy?url=${encodeURIComponent(orig)}` : orig) : '');
+          return;
+        }
         if (apiBase && source === 'sharepoint' && driveId && itemId) {
           try {
             const at = await getToken?.(['Files.Read.All', 'Sites.Read.All']);
             if (at) {
               setDocUrl(`${apiBase}/api/proxy/graph?driveId=${encodeURIComponent(driveId)}&itemId=${encodeURIComponent(itemId)}&token=${encodeURIComponent(at)}`);
+              const orig = (currentDoc as any)?.toba_originalurl || (currentDoc as any)?.url || '';
+              setBackupUrl(orig ? (apiBase ? `${apiBase}/api/proxy?url=${encodeURIComponent(orig)}` : orig) : '');
               return;
             }
           } catch {
             // Token not available; prompt user to grant Graph access
             setNeedGraphAuth(true);
             setDocUrl('');
+            setBackupUrl('');
             return;
           }
         }
@@ -188,20 +202,24 @@ const DocumentReader: React.FC = () => {
             const at = await getToken?.(['Files.Read.All', 'Sites.Read.All']);
             if (at) {
               setDocUrl(`${apiBase}/api/proxy/graph?url=${encodeURIComponent(url)}&token=${encodeURIComponent(at)}`);
+              setBackupUrl(apiBase ? `${apiBase}/api/proxy?url=${encodeURIComponent(url)}` : url);
               return;
             }
           } catch {
             // Token not available; do not fall back to unauthenticated proxy (would fail). Show hint.
             setNeedGraphAuth(true);
             setDocUrl('');
+            setBackupUrl('');
             return;
           }
         }
-        // Fallback: simple URL proxy
+        // Fallback: simple URL proxy, with raw URL as backup
         setDocUrl(apiBase ? `${apiBase}/api/proxy?url=${encodeURIComponent(url)}` : url);
+        setBackupUrl(url);
       } catch {
         const url = currentDoc?.toba_fileurl || (currentDoc as any)?.url || '';
         setDocUrl(apiBase ? `${apiBase}/api/proxy?url=${encodeURIComponent(url)}` : url);
+        setBackupUrl(url);
       }
     })();
   // re-evaluate when the selected doc changes or apiBase changes
@@ -213,11 +231,15 @@ const DocumentReader: React.FC = () => {
       try {
         setContentType('');
         if (!docUrl) return;
-        if (apiBase && typeof docUrl === 'string' && docUrl.startsWith(apiBase)) {
-          const diagUrl = docUrl + (docUrl.includes('?') ? '&' : '?') + 'diag=1';
-          const res = await fetch(diagUrl);
+        // Support both absolute (apiBase-prefixed) and relative '/api/*' URLs
+        const isAbsoluteApi = apiBase && typeof docUrl === 'string' && docUrl.startsWith(apiBase);
+        const isRelativeApi = typeof docUrl === 'string' && docUrl.startsWith('/api/');
+        if (isAbsoluteApi || isRelativeApi) {
+          const abs = isAbsoluteApi ? docUrl : ((apiBase || '') + docUrl);
+          const diagUrl = abs + (abs.includes('?') ? '&' : '?') + 'diag=1';
+          const res = await fetch(diagUrl, { cache: 'no-store' });
           const info = await res.json().catch(() => null);
-          const ct = (info?.contentType || res.headers.get('content-type') || '').toString();
+          const ct = (info?.mime || info?.contentType || res.headers.get('content-type') || '').toString();
           if (ct) setContentType(ct);
         }
       } catch {
@@ -232,6 +254,8 @@ const DocumentReader: React.FC = () => {
   const isPdf = extHintPdf || /application\/pdf/i.test(contentType);
   const isDocx = extHintDocx || /vnd\.openxmlformats-officedocument\.wordprocessingml\.document/i.test(contentType);
   const proxiedDownloadUrl = docUrl ? (docUrl + (docUrl.includes('?') ? '&' : '?') + 'download=1') : '';
+  const openInNewTabUrl = docUrl ? (docUrl + (docUrl.includes('?') ? '&' : '?') + 'redir=1') : '';
+  const viewerUrls = (backupUrl && backupUrl !== docUrl) ? [docUrl, backupUrl] : docUrl;
 
   return (
     <div className="container">
@@ -255,9 +279,9 @@ const DocumentReader: React.FC = () => {
           )}
           {docUrl ? (
             isPdf ? (
-              <PdfViewer url={docUrl} />
+              <PdfViewer url={viewerUrls} />
             ) : isDocx ? (
-              <DocxViewer url={docUrl} />
+              <DocxViewer url={Array.isArray(viewerUrls) ? viewerUrls[0] : viewerUrls} />
             ) : (
               <div className="muted small" style={{ padding: 12, textAlign: 'center', border: '1px solid #eee', borderRadius: 6 }}>
                 Preview not available for this file type. Use Download or Open in new tab.
@@ -271,10 +295,16 @@ const DocumentReader: React.FC = () => {
           {(docUrl || rawUrl) && (
             <div className="small" style={{ marginTop: 8, textAlign: 'right' }}>
               {docUrl && (
-                <a href={docUrl} target="_blank" rel="noopener noreferrer" style={{ marginRight: 12 }}>Open in new tab ↗</a>
+                <a href={openInNewTabUrl} target="_blank" rel="noopener noreferrer" style={{ marginRight: 12 }}>Open in new tab ↗</a>
               )}
               {docUrl && (
                 <a href={proxiedDownloadUrl} className="btn ghost xs">Download</a>
+              )}
+              {((currentDoc as any)?.toba_originalurl && (currentDoc as any)?.toba_originalurl !== docUrl) && (
+                <>
+                  {docUrl && <span style={{ margin: '0 8px', color: '#bbb' }}>|</span>}
+                  <a href={(currentDoc as any).toba_originalurl} target="_blank" rel="noopener noreferrer">View in SharePoint</a>
+                </>
               )}
             </div>
           )}

@@ -11,14 +11,18 @@ import AdminPanel from './components/AdminPanel';
 import Landing from './components/Landing';
 import About from './components/About';
 import { useAuth } from './context/AuthContext';
+import { useExternalAuth } from './context/ExternalAuthContext';
 import { useFeatureFlags } from './context/FeatureFlagsContext';
 
 import LoginGateway from './components/LoginGateway.tsx';
 import ExternalLogin from './components/ExternalLogin.tsx';
 import Logout from './components/Logout.tsx';
+import ModulesHub from './components/ModulesHub';
+const SuperAdminConsole = React.lazy(() => import('./components/SuperAdminConsole'));
 
 export const AppRoutes: React.FC = () => {
   const { account } = useAuth();
+  const { isAuthenticated: isExternal, user: externalUser } = useExternalAuth();
   const { externalSupport, loaded } = useFeatureFlags();
   const UnifiedLogin = React.lazy(() => import('./components/UnifiedLogin'));
   const Onboard = React.lazy(() => import('./components/Onboard'));
@@ -32,19 +36,21 @@ export const AppRoutes: React.FC = () => {
 
   return (
     <Routes>
-      <Route path="/" element={account ? <Dashboard /> : <Landing />} />
+      <Route path="/" element={(account || isExternal) ? <Dashboard /> : <Landing />} />
       <Route path="/login" element={<React.Suspense fallback={null}><LoginGateway /></React.Suspense>} />
       <Route path="/login/external" element={<React.Suspense fallback={null}><ExternalEnabledGuard><ExternalLogin /></ExternalEnabledGuard></React.Suspense>} />
       {/* Onboarding and password setup for external users */}
       <Route path="/onboard" element={<React.Suspense fallback={null}><ExternalEnabledGuard><Onboard /></ExternalEnabledGuard></React.Suspense>} />
       <Route path="/mfa" element={<React.Suspense fallback={null}><ExternalEnabledGuard><MFA /></ExternalEnabledGuard></React.Suspense>} />
       <Route path="/reset-password" element={<React.Suspense fallback={null}><ExternalEnabledGuard><ResetPassword /></ExternalEnabledGuard></React.Suspense>} />
-      <Route path="/about" element={<About />} />
+  <Route path="/about" element={<About />} />
+  <Route path="/modules" element={<RequireAuth><ModulesHub /></RequireAuth>} />
       <Route path="/batch/:id" element={<RequireAuth><BatchDetail /></RequireAuth>} />
       <Route path="/batch/:id/completed" element={<RequireAuth><CompletedBatch /></RequireAuth>} />
       <Route path="/document/:id/*" element={<RequireAuth><DocumentReader /></RequireAuth>} />
       <Route path="/summary" element={<RequireAuth><Summary /></RequireAuth>} />
       <Route path="/admin" element={<AdminGuard><AdminPanel /></AdminGuard>} />
+  <Route path="/super-admin" element={<AdminGuard><React.Suspense fallback={null}><SuperAdminConsole /></React.Suspense></AdminGuard>} />
       <Route path="/logout" element={<Logout />} />
     </Routes>
   );
@@ -64,6 +70,7 @@ const AdminGuard: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
 const RequireAuth: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { account } = useAuth();
-  if (!account) return <Navigate to="/" replace />;
+  const { isAuthenticated: isExternal } = useExternalAuth();
+  if (!account && !isExternal) return <Navigate to="/" replace />;
   return <>{children}</>;
 };

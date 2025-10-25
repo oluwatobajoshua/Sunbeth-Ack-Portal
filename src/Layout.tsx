@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
+import { useExternalAuth } from './context/ExternalAuthContext';
 import { useRBAC } from './context/RBACContext';
+import { useTenant } from './context/TenantContext';
 // import DevPanel from './components/DevPanel';
 import { info } from './diagnostics/logger';
 import { getBatches, getUserProgress } from './services/dbService';
@@ -9,6 +11,8 @@ import DancingLogoOverlay from './components/DancingLogoOverlay';
 
 const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { account, token, photo, login, logout } = useAuth();
+  const { user: externalUser, isAuthenticated: isExternal, logout: externalLogout } = useExternalAuth();
+  const { tenant } = useTenant();
   const [theme, setTheme] = useState<'light'|'dark'>(() => {
     try { return (localStorage.getItem('sunbeth_theme') as 'light'|'dark') || 'light'; } catch { return 'light'; }
   });
@@ -32,7 +36,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
     info('Layout mounted');
     const compute = async () => {
       // if not signed in yet, show neutral state
-      if (!account || !token) { 
+      if ((!account || !token) && !isExternal) { 
         setPending(null); 
         setDueBy(null); 
         return; 
@@ -43,7 +47,8 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
         // Use current token from context
         let list: any[] = [];
         try { 
-          list = await getBatches(token, account?.username || undefined); 
+          const email: string | undefined = account?.username || externalUser?.email || undefined;
+          list = await getBatches(token || undefined, email); 
         } catch { 
           list = []; 
         }
@@ -59,7 +64,8 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
         
         for (const b of list) {
           try {
-            const p = await getUserProgress(b.toba_batchid, token, undefined, account?.username || undefined);
+            const email: string | undefined = account?.username || externalUser?.email || undefined;
+            const p = await getUserProgress(b.toba_batchid, token || undefined, undefined, email);
             const total = p.total ?? 0; 
             const acked = p.acknowledged ?? 0;
             const remain = Math.max(0, total - acked);
@@ -89,7 +95,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
     return () => {
       window.removeEventListener('sunbeth:progressUpdated', onProgress as EventListener);
     };
-  }, [account, token]);
+  }, [account, token, isExternal, externalUser?.email]);
   const rbac = useRBAC();
   // Redirect rules around auth transitions for cleaner UX
   useEffect(() => {
@@ -114,7 +120,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
       navigate('/', { replace: true });
     }
   }, [account, location.pathname, navigate]);
-  const showAside = !!(account && (location.pathname === '/' || location.pathname.startsWith('/dashboard')));
+  const showAside = !!((account || isExternal) && (location.pathname === '/' || location.pathname.startsWith('/dashboard')));
   return (
     <>
       {/* Global busy overlay (dancing logo) */}
@@ -125,10 +131,15 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
           <div>
             <div className="h1" style={{ color: '#fff' }}>Sunbeth Document Acknowledgement</div>
             <div className="small" style={{ color: '#fff', opacity: .9 }}>Employee Acknowledgment Portal</div>
+            {process.env.NODE_ENV !== 'production' && tenant && (
+              <div className="small" style={{ marginTop: 4 }}>
+                <span className="badge" title="Active tenant in dev (resolved by X-Tenant-Domain header or host)">Dev Tenant: {tenant.name}{tenant.domain ? ` · ${tenant.domain}` : ''}</span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* show auth area when signed-in; else show a light nav */}
+        {/* show auth area when signed-in (MSAL) or as external; else show a light nav */}
         {account ? (
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 12, alignItems: 'center' }}>
             {rbac.isSuperAdmin && (
@@ -148,6 +159,22 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
                 <div style={{ color: '#ddd', fontSize: 13 }}>{account.username}</div>
               </div>
               <button className="btn sm" onClick={() => logout()}>Sign out</button>
+            </div>
+          </div>
+        ) : isExternal ? (
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 12, alignItems: 'center' }}>
+            <button className="btn ghost sm" aria-label="Toggle theme" onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}>{theme === 'light' ? 'Dark' : 'Light'} Mode</button>
+            <button className="btn ghost sm" aria-label="Toggle sticky header" onClick={() => setStickyHeader(s => !s)}>{stickyHeader ? 'Unpin Header' : 'Pin Header'}</button>
+
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '6px 8px', background: 'rgba(255,255,255,0.04)', borderRadius: 6 }}>
+              <div style={{ width: 36, height: 36, borderRadius: 18, overflow: 'hidden', background: '#e5e7eb', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#111', fontWeight: 700 }}>
+                {(externalUser?.name || externalUser?.email || 'U').slice(0,1).toUpperCase()}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <div style={{ fontWeight: 700, color: '#fff' }}>{externalUser?.name || 'External User'}</div>
+                <div style={{ color: '#ddd', fontSize: 13 }}>{externalUser?.email}</div>
+              </div>
+              <button className="btn sm" onClick={() => externalLogout()}>Sign out</button>
             </div>
           </div>
         ) : (

@@ -7,7 +7,8 @@ import 'react-pdf/dist/esm/Page/TextLayer.css';
 pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
 interface PdfViewerProps {
-  url: string;
+  // Primary URL or a list of URLs to try in order (e.g., proxy then original)
+  url: string | string[];
 }
 
 const PdfViewer: React.FC<PdfViewerProps> = ({ url }) => {
@@ -34,7 +35,10 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ url }) => {
     setError('');
     setPdfData(null);
 
-    const fetchWithFallback = async (u: string): Promise<Uint8Array> => {
+    const fetchWithFallback = async (input: string | string[]): Promise<Uint8Array> => {
+      const list = Array.isArray(input) ? input.filter(Boolean) : [input].filter(Boolean);
+      const tried: string[] = [];
+
       const doFetch = async (target: string) => {
         const res = await fetch(target, { headers: { 'Accept': 'application/pdf,*/*;q=0.8' }, cache: 'no-store' as RequestCache });
         if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -42,19 +46,34 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ url }) => {
         return new Uint8Array(ab);
       };
 
-      // 1) Try as-is
-      let data = await doFetch(u);
-      if (data.byteLength > 0) return data;
-
-      // 2) Retry with download=1 hint (some servers require attachment disposition to stream reliably)
-      const dlUrl = u + (u.includes('?') ? '&' : '?') + 'download=1';
-      data = await doFetch(dlUrl);
-      return data;
+      let lastErr: unknown = null;
+      for (const base of list) {
+        if (!base) continue;
+        // Try base
+        try {
+          tried.push(base);
+          const data = await doFetch(base);
+          if (data.byteLength > 0) return data;
+        } catch (e) {
+          lastErr = e;
+        }
+        // Try with download=1 hint
+        try {
+          const dlUrl = base + (base.includes('?') ? '&' : '?') + 'download=1';
+          tried.push(dlUrl);
+          const data = await doFetch(dlUrl);
+          if (data.byteLength > 0) return data;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      const errMsg = (lastErr instanceof Error ? lastErr.message : 'Failed to load PDF') + (tried.length ? `\nTried: ${tried.join(' | ')}` : '');
+      throw new Error(errMsg);
     };
 
     (async () => {
       try {
-        const uint8Array = await fetchWithFallback(url);
+  const uint8Array = await fetchWithFallback(url);
         if (uint8Array.byteLength === 0) {
           throw new Error('The PDF file is empty, i.e. its size is zero bytes.');
         }
@@ -106,10 +125,27 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ url }) => {
   }
 
   if (error) {
+    // Attempt a non-fetch fallback using iframe to the first candidate URL
+    const firstUrl = (Array.isArray(url) ? url[0] : url) || '';
+    const fallbackUrl = firstUrl ? (firstUrl + (firstUrl.includes('?') ? '&' : '?') + 'download=1') : '';
     return (
-      <div style={{ padding: 20, textAlign: 'center', color: '#d32f2f' }}>
-        <div style={{ marginBottom: 8 }}>⚠️ Error loading PDF</div>
-        <div style={{ fontSize: '0.9em' }}>{error}</div>
+      <div style={{ padding: 12 }}>
+        <div style={{ marginBottom: 8, textAlign: 'center', color: '#d32f2f' }}>
+          <div style={{ marginBottom: 4 }}>⚠️ Error loading PDF</div>
+          <div style={{ fontSize: '0.9em', whiteSpace: 'pre-wrap' }}>{error}</div>
+        </div>
+        {firstUrl && (
+          <div style={{ border: '1px solid #ddd', borderRadius: 6, overflow: 'hidden', background: '#f5f5f5' }}>
+            <div className="small" style={{ padding: 8, background: '#fff', borderBottom: '1px solid #e6e6e6' }}>
+              Trying inline preview fallback…
+            </div>
+            <iframe
+              title="pdf-fallback"
+              src={fallbackUrl}
+              style={{ display: 'block', width: '100%', height: '70vh', border: 'none' }}
+            />
+          </div>
+        )}
       </div>
     );
   }

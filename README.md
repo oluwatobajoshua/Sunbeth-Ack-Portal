@@ -91,8 +91,10 @@ Before running this project, ensure you have:
    REACT_APP_AZURE_TENANT_ID=your_tenant_id
    REACT_APP_AZURE_REDIRECT_URI=http://localhost:3000
 
-   # API Configuration (optional for dev; proxy targets http://localhost:4000)
-   REACT_APP_API_BASE_URL=http://localhost:4000
+   # API Configuration (recommended)
+   # Point the frontend to your backend API base URL so it is independent of dev proxy
+   REACT_APP_API_BASE=http://localhost:4000
+   REACT_APP_ENABLE_SQLITE=true
 
    # Feature Flags
    REACT_APP_ENABLE_EXTERNAL_AUTH=true
@@ -116,6 +118,25 @@ Before running this project, ensure you have:
    The API will be available at `http://localhost:4000`
    
    Development requests to `/api/*` from the React app are proxied to `http://127.0.0.1:4000` by `src/setupProxy.js`.
+
+#### Multi-tenant theming in dev (no hosts file required)
+
+To test different tenant themes without editing your OS hosts file, you can set an environment variable that the dev proxy forwards to the backend as a header.
+
+- Select API target (defaults to 4000):
+   - `REACT_APP_DEV_API_TARGET=http://127.0.0.1:4000`
+- Select tenant by domain header (optional):
+   - `REACT_APP_DEV_TENANT_DOMAIN=orga.local.test`
+
+Example (PowerShell on Windows):
+
+```powershell
+$env:REACT_APP_DEV_API_TARGET='http://127.0.0.1:4000'
+$env:REACT_APP_DEV_TENANT_DOMAIN='orga.local.test'  # or orgb.local.test, etc.
+npm start
+```
+
+The proxy will send `X-Tenant-Domain: orga.local.test` with each `/api` request, allowing the backend to resolve the matching tenant and return the appropriate theme.
 
 ### Production Build
 
