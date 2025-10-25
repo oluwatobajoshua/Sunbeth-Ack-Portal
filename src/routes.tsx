@@ -45,9 +45,9 @@ export const AppRoutes: React.FC = () => {
       <Route path="/document/:id/*" element={<RequireAuth><DocumentReader /></RequireAuth>} />
       <Route path="/summary" element={<RequireAuth><Summary /></RequireAuth>} />
       <Route path="/admin" element={<AdminGuard><AdminPanel /></AdminGuard>} />
+      <Route path="/logout" element={<Logout />} />
     </Routes>
   );
-      <Route path="/logout" element={<Logout />} />
 };
 
 // small component to log route changes

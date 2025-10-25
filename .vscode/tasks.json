@@ -63,6 +63,72 @@
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "build"
+		},
+		{
+			"label": "Build React app",
+			"type": "shell",
+			"command": "npm run build --silent",
+			"group": "build"
+		},
+		{
+			"label": "Build React app",
+			"type": "shell",
+			"command": "npm run build --silent",
+			"group": "build"
+		},
+		{
+			"label": "Build React app",
+			"type": "shell",
+			"command": "npm run build --silent",
+			"group": "build"
+		},
+		{
+			"label": "Build React app",
+			"type": "shell",
+			"command": "npm run build --silent",
+			"group": "build"
+		},
+		{
+			"label": "Build React app",
+			"type": "shell",
+			"command": "npm run build --silent",
+			"group": "build"
+		},
+		{
+			"label": "Build React app",
+			"type": "shell",
+			"command": "npm run build --silent",
+			"group": "build"
+		},
+		{
+			"label": "Build React app",
+			"type": "shell",
+			"command": "npm run build --silent",
+			"group": "build"
+		},
+		{
+			"label": "Build React app",
+			"type": "shell",
+			"command": "npm run build --silent",
+			"group": "build"
+		},
+		{
+			"label": "Build React app",
+			"type": "shell",
+			"command": "npm run build --silent",
+			"group": "build"
+		},
+		{
+			"label": "Build React app",
+			"type": "shell",
+			"command": "npm run build --silent",
+			"group": "build"
+		},
+		{
+			"label": "Build React app",
+			"type": "shell",
+			"command": "npm run build --silent",
+			"group": "build"
 		}
 	]
 }
