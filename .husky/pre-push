@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+echo "[pre-push] Running frontend checks: lint, test, build"
+
+# Fail fast on any error
+set -e
+
+# Ensure we are at repo root (this file resides in .husky)
+REPO_DIR=$(cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$REPO_DIR"
+
+npm run lint
+npm test --silent -- --watchAll=false
+npm run build
+
+echo "[pre-push] Frontend checks passed ✅"

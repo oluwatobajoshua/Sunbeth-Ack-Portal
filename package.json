@@ -46,6 +46,7 @@
   "@typescript-eslint/eslint-plugin": "^5.62.0",
   "@typescript-eslint/parser": "^5.62.0",
     "prettier": "^3.3.3",
+    "husky": "^8.0.3",
     "cross-env": "^7.0.3",
     "serve": "^14.2.1"
   },
@@ -53,6 +54,7 @@
     "start": "react-scripts start",
   "build": "cross-env GENERATE_SOURCEMAP=false DISABLE_ESLINT_PLUGIN=true react-scripts build",
     "test": "react-scripts test",
+    "check:prepush": "npm run lint && npm test --silent -- --watchAll=false && npm run build",
     "preview": "serve -s build -l 5000",
     "serve": "serve -s build -l 5000",
     "fix:sourcemaps": "node scripts/remove-docx-preview-sourcemaps.cjs",
@@ -63,7 +65,8 @@
     "lint:fix": "eslint \"src/**/*.{ts,tsx,js,jsx}\" --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "prepare": "husky install"
   },
   "browserslist": {
     "production": [
