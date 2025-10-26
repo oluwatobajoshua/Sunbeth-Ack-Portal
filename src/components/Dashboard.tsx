@@ -9,6 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import { useRBAC } from '../context/RBACContext';
 import { getBatches, getUserProgress } from '../services/dbService';
 import type { Batch } from '../types/models';
+import { fetchDuePolicies } from '../utils/policiesDue';
 
 const Dashboard: React.FC = () => {
   const { token, account } = useAuth();
@@ -16,6 +17,7 @@ const Dashboard: React.FC = () => {
   const [progressMap, setProgressMap] = useState<Record<string, { percent: number; total: number; acknowledged: number }>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [duePoliciesCount, setDuePoliciesCount] = useState<number>(0);
   const rbac = useRBAC();
 
   useEffect(() => {
@@ -32,6 +34,19 @@ const Dashboard: React.FC = () => {
     };
     load();
   }, [token, account?.username]);
+
+  // Pre-modal visibility: show a subtle banner for due policies
+  useEffect(() => {
+    if (!account?.username) { setDuePoliciesCount(0); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const due = await fetchDuePolicies(account.username);
+        if (!cancelled) setDuePoliciesCount(due.length);
+      } catch { if (!cancelled) setDuePoliciesCount(0); }
+    })();
+    return () => { cancelled = true; };
+  }, [account?.username]);
 
   useEffect(() => {
     if (!Array.isArray(batches) || batches.length === 0) return;
@@ -86,6 +101,11 @@ const Dashboard: React.FC = () => {
   return (
     <div className="container">
       <div className="card">
+        {duePoliciesCount > 0 && (
+          <div className="small" style={{ background: '#f8f9fa', border: '1px solid #e9ecef', padding: 8, borderRadius: 6, marginBottom: 10 }}>
+            <span style={{ fontWeight: 600 }}>{duePoliciesCount}</span> policy acknowledgement{duePoliciesCount > 1 ? 's' : ''} due. You may be prompted to review them.
+          </div>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
             <div className="title">Welcome{account ? `, ${account.name}` : ''}</div>

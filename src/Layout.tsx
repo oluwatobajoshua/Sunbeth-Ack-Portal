@@ -9,6 +9,7 @@ import { useTenant } from './context/TenantContext';
 import { info } from './diagnostics/logger';
 import { getBatches, getUserProgress } from './services/dbService';
 import DancingLogoOverlay from './components/DancingLogoOverlay';
+import { enforceDuePolicies } from './utils/policiesDue';
 
 const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { account, token, photo, login, logout } = useAuth();
@@ -42,6 +43,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
   const prevAccount = useRef(account);
   const [pending, setPending] = useState<number | null>(null);
   const [dueBy, setDueBy] = useState<string | null>(null);
+  const duePoliciesChecked = useRef<boolean>(false);
 
   useEffect(() => {
     info('Layout mounted');
@@ -107,6 +109,16 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
       window.removeEventListener('sunbeth:progressUpdated', onProgress as EventListener);
     };
   }, [account, token, isExternal, externalUser?.email]);
+
+  // Proactively prompt for due policies on login
+  useEffect(() => {
+    const email = account?.username || externalUser?.email;
+    if (!email || duePoliciesChecked.current) return;
+    duePoliciesChecked.current = true;
+    (async () => {
+      try { await enforceDuePolicies(email); } catch {}
+    })();
+  }, [account?.username, externalUser?.email]);
   const rbac = useRBAC();
 
   // If External Support is disabled while an external user is signed in, log them out and route to landing

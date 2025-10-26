@@ -29,7 +29,22 @@ export function recordConsent(userEmail?: string | null, batchId?: string | null
   }
 }
 
-// eslint-disable-next-line complexity
+async function sendConsentReceipt(userEmail?: string | null, batchId?: string | null) {
+  try {
+    const base = getApiBase() || '';
+    if (!base || !userEmail) return;
+    await fetch(`${base}/api/consents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: userEmail, batchId: batchId || undefined })
+    });
+  } catch (e) {
+    // non-blocking; log for diagnostics only
+    console.debug('consent receipt failed (non-blocking)', e);
+  }
+}
+
+// eslint-disable-next-line complexity, max-lines-per-function
 export async function requestConsentIfNeeded(userEmail?: string | null, batchId?: string | null): Promise<boolean> {
   if (hasConsent(userEmail, batchId)) return true;
   const title = 'Court-certified acknowledgement consent';
@@ -73,6 +88,8 @@ export async function requestConsentIfNeeded(userEmail?: string | null, batchId?
     const choice = await ask();
     if (choice === 'agree') {
       recordConsent(userEmail, batchId);
+      // Best-effort server receipt for audit
+      void sendConsentReceipt(userEmail, batchId);
       return true;
     }
     if (choice === 'preview' && previewUrl) {

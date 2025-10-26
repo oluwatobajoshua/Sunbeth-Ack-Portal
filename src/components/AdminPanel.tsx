@@ -1,11 +1,12 @@
+/* eslint-disable max-lines-per-function, complexity, react-hooks/exhaustive-deps, react-hooks/rules-of-hooks, @typescript-eslint/no-empty-function, @typescript-eslint/no-non-null-assertion, no-empty, max-lines, max-depth, no-useless-escape, global-require */
 import React, { useEffect, useState } from 'react';
 import { NotificationEmailsTab } from './admin/NotificationEmailsTab';
-import { DocumentListEditor, type SimpleDoc } from './admin/DocumentListEditor';
+import { type SimpleDoc } from './admin/DocumentListEditor';
 import { UserGroupSelector } from './admin/UserGroupSelector';
 import { useAuth as useAuthCtx } from '../context/AuthContext';
 import { useRBAC } from '../context/RBACContext';
 // import { useAuth } from '../context/AuthContext';
-import { GraphUser, GraphGroup, getUsers, getGroups, getOrganizationStructure, UserSearchFilters, getGroupMembers } from '../services/graphUserService';
+import { GraphUser, GraphGroup, getGroupMembers } from '../services/graphUserService';
 import AnalyticsDashboard from './AnalyticsDashboard';
 import { exportAnalyticsExcel } from '../utils/excelExport';
 import Modal from './Modal';
@@ -13,276 +14,25 @@ import { useFeatureFlags } from '../context/FeatureFlagsContext';
 import { sendEmail, sendEmailWithAttachmentChunks, buildBatchEmail, fetchAsBase64 /*, sendTeamsDirectMessage*/ } from '../services/notificationService';
 import { getGraphToken } from '../services/authTokens';
 import { runAuthAndGraphCheck, Step } from '../diagnostics/health';
-import { getBusinesses, createBusiness, updateBusiness, deleteBusiness } from '../services/dbService';
+import { getBusinesses } from '../services/dbService';
 // SharePoint Lists removed; SQLite-only mode
-// SharePoint document browsing & upload
-import { SharePointSite, SharePointDocumentLibrary, SharePointDocument, getSharePointSites, getDocumentLibraries, getDocuments, uploadFileToDrive, getFolderItems } from '../services/sharepointService';
+// SharePoint document browsing & upload (browser component handles interactions)
 import BatchCreationDebug from './BatchCreationDebug';
-import Alerts, { alertSuccess, alertError, alertInfo, alertWarning, confirmDialog, showToast } from '../utils/alerts';
+import { alertSuccess, alertError, alertInfo, alertWarning, showToast } from '../utils/alerts';
 import { busyPush, busyPop } from '../utils/busy';
-import { getRoles, createRole, deleteRole, type DbRole } from '../services/dbService';
-import { isSQLiteEnabled, getApiBase, isAdminLight, useAdminModalSelectors } from '../utils/runtimeConfig';
+import { isSQLiteEnabled, getApiBase, isAdminLight, useAdminModalSelectors as adminModalSelectorsDefault } from '../utils/runtimeConfig';
 import RBACMatrix from './RBACMatrix';
+import RolesManager from './admin/RolesManager';
 import ExternalUsersManager from './ExternalUsersManager';
 import BusinessesBulkUpload from './BusinessesBulkUpload';
 import { downloadAllTemplatesExcel, downloadExternalUsersTemplateExcel, downloadExternalUsersTemplateCsv, downloadBusinessesTemplateExcel, downloadBusinessesTemplateCsv } from '../utils/importTemplates';
 import AuditLogs from './AuditLogs';
+import AdminSettings from './admin/AdminSettings';
+import LocalLibraryPicker from './admin/LocalLibraryPicker';
+import ManageBatches from './admin/ManageBatches';
+import BusinessesManager from './admin/BusinessesManager';
 
-// Enhanced Admin Settings Component
-type AdminSettingsProps = { canEdit: boolean };
-
-const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
-  const { account } = useAuthCtx();
-  const { refresh: refreshFlags } = useFeatureFlags();
-  const storageKey = 'admin_settings';
-  const [settings, setSettings] = useState({
-    enableUpload: false,
-    requireSig: false,
-    autoReminder: true,
-    reminderDays: 3,
-    allowBulkAssignment: true,
-    requireApproval: false
-  });
-
-  // External support flag (server-backed)
-  const [extEnabled, setExtEnabled] = useState<boolean>(false);
-  const [extLoading, setExtLoading] = useState<boolean>(false);
-  const [extSaving, setExtSaving] = useState<boolean>(false);
-  const apiBase = (getApiBase() as string) || '';
-
-  // Legal consent document
-  const [legalDoc, setLegalDoc] = useState<{ fileId: number | null; url: string | null; name: string | null }>({ fileId: null, url: null, name: null });
-  const [legalBusy, setLegalBusy] = useState<boolean>(false);
-
-
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) {
-        const obj = JSON.parse(raw);
-        setSettings({ ...settings, ...obj });
-      }
-    } catch {}
-  }, []);
-
-  // Load external support flag
-  useEffect(() => {
-    (async () => {
-      try {
-        setExtLoading(true);
-        if (!apiBase) { setExtEnabled(false); return; }
-        const res = await fetch(`${apiBase}/api/settings/external-support`, { cache: 'no-store' });
-        const j = await res.json();
-        setExtEnabled(!!j?.enabled);
-      } catch {
-        setExtEnabled(false);
-      } finally {
-        setExtLoading(false);
-      }
-    })();
-  }, [apiBase]);
-
-  // Load current legal consent document
-  useEffect(() => {
-    (async () => {
-      try {
-        if (!apiBase) return;
-        const res = await fetch(`${apiBase}/api/settings/legal-consent`, { cache: 'no-store' });
-        const j = await res.json();
-        setLegalDoc({ fileId: j?.fileId ?? null, url: j?.url ? (apiBase + j.url) : null, name: j?.name ?? null });
-      } catch {}
-    })();
-  }, [apiBase]);
-
-  const apply = () => {
-    if (!canEdit) return;
-    try {
-  localStorage.setItem(storageKey, JSON.stringify(settings));
-  Alerts.toast('Settings saved');
-    } catch (e) {
-      console.warn(e);
-    }
-  };
-
-  const saveExternalSupport = async (value: boolean) => {
-    if (!canEdit || !apiBase) return;
-    setExtSaving(true);
-    try {
-      const res = await fetch(`${apiBase}/api/settings/external-support`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: value }) });
-      if (!res.ok) throw new Error('save_failed');
-      setExtEnabled(value);
-      try { await refreshFlags(); } catch {}
-      Alerts.toast(`External user support ${value ? 'enabled' : 'disabled'}`);
-    } catch {
-      Alerts.toast('Failed to save external support setting');
-    } finally {
-      setExtSaving(false);
-    }
-  };
-
-  const seedSqliteForMe = async () => {
-    try {
-      if (!isSQLiteEnabled()) {
-        alertWarning('SQLite disabled', 'Enable SQLite (REACT_APP_ENABLE_SQLITE=true) and set REACT_APP_API_BASE to seed.');
-        return;
-      }
-      if (!account?.username) {
-        alertInfo('Sign in required', 'Sign in first to seed data for your account.');
-        return;
-      }
-  const base = (getApiBase() as string);
-      const res = await fetch(`${base}/api/seed?email=${encodeURIComponent(account.username)}`, { method: 'POST' });
-      if (!res.ok) throw new Error('Seed failed');
-      const j = await res.json().catch(() => ({}));
-      alertSuccess('SQLite seeded', `BatchId: <b>${j?.batchId ?? 'n/a'}</b>`);
-    } catch (e) {
-      alertError('Seed failed', 'Unable to seed demo data.');
-    }
-  };
-
-
-
-  const grantCorePermissions = async () => {
-    try {
-      // Request common scopes used across the Admin feature set
-      // Do these in series to present clearer consent prompts
-      await getGraphToken(['User.Read']);
-      await getGraphToken(['Group.Read.All']);
-      await getGraphToken(['Sites.Read.All','Files.ReadWrite.All']);
-      await getGraphToken(['Mail.Send']);
-      showToast('Core Graph permissions granted');
-    } catch (e) {
-      showToast('Grant permissions failed', 'error');
-    }
-  };
-
-
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <h3 style={{ margin: 0, fontSize: 16 }}>System Settings</h3>
-      {/* External Support Toggle */}
-      <div className="card" style={{ padding: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div>
-            <div style={{ fontWeight: 700 }}>External User Support</div>
-            <div className="small muted">When disabled, external login, onboarding, and related UI/routes are hidden.</div>
-          </div>
-          <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <input type="checkbox" checked={!!extEnabled} disabled={extLoading || extSaving || !canEdit} onChange={e => saveExternalSupport(e.target.checked)} />
-            <span>{extEnabled ? 'Enabled' : 'Disabled'}</span>
-          </label>
-        </div>
-      </div>
-      {/* Legal Consent Document */}
-      <div className="card" style={{ padding: 16 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <div style={{ fontWeight: 700 }}>Legal Consent Document</div>
-            <div className="small muted">PDF shown to users from the consent dialog. Applies globally.</div>
-            {legalDoc?.url ? (
-              <div className="small" style={{ marginTop: 6 }}>
-                Current: <a href={legalDoc.url} target="_blank" rel="noreferrer">{legalDoc.name || 'document.pdf'} ↗</a>
-              </div>
-            ) : (
-              <div className="small muted" style={{ marginTop: 6 }}>Not set</div>
-            )}
-          </div>
-          <div>
-            <label className="btn sm" style={{ cursor: canEdit ? 'pointer' : 'not-allowed', opacity: canEdit ? 1 : .6 }}>
-              {legalBusy ? 'Uploading…' : (legalDoc?.fileId ? 'Replace PDF' : 'Upload PDF')}
-              <input type="file" accept="application/pdf" style={{ display: 'none' }} disabled={!canEdit || legalBusy} onChange={async (e) => {
-                try {
-                  const file = e.target.files && e.target.files[0];
-                  if (!file || !apiBase) return;
-                  setLegalBusy(true);
-                  const fd = new FormData();
-                  fd.append('file', file);
-                  const up = await fetch(`${apiBase}/api/files/upload`, { method: 'POST', body: fd });
-                  const uj = await up.json();
-                  if (!up.ok || !uj?.id) { showToast('Upload failed', 'error'); return; }
-                  const put = await fetch(`${apiBase}/api/settings/legal-consent`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileId: uj.id }) });
-                  if (!put.ok) { showToast('Save failed', 'error'); return; }
-                  setLegalDoc({ fileId: uj.id, url: `${apiBase}/api/files/${uj.id}`, name: file.name });
-                  showToast('Legal document saved', 'success');
-                } catch {
-                  showToast('Upload failed', 'error');
-                } finally {
-                  setLegalBusy(false);
-                  try { (e.target as HTMLInputElement).value = ''; } catch {}
-                }
-              }} />
-            </label>
-            {legalDoc?.fileId && (
-              <button className="btn ghost sm" style={{ marginLeft: 8 }} disabled={!canEdit || legalBusy} onClick={async () => {
-                try {
-                  if (!apiBase) return;
-                  setLegalBusy(true);
-                  const put = await fetch(`${apiBase}/api/settings/legal-consent`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileId: null }) });
-                  if (!put.ok) { showToast('Failed to clear', 'error'); return; }
-                  setLegalDoc({ fileId: null, url: null, name: null });
-                  showToast('Cleared legal document', 'success');
-                } catch { showToast('Failed to clear', 'error'); }
-                finally { setLegalBusy(false); }
-              }}>Clear</button>
-            )}
-          </div>
-        </div>
-      </div>
-      
-      <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input type="checkbox" checked={settings.enableUpload} onChange={e => setSettings({...settings, enableUpload: e.target.checked})} disabled={!canEdit} />
-          <span className="small">Enable document upload</span>
-        </label>
-        
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input type="checkbox" checked={settings.requireSig} onChange={e => setSettings({...settings, requireSig: e.target.checked})} disabled={!canEdit} />
-          <span className="small">Require digital signatures</span>
-        </label>
-        
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input type="checkbox" checked={settings.autoReminder} onChange={e => setSettings({...settings, autoReminder: e.target.checked})} disabled={!canEdit} />
-          <span className="small">Auto-send reminders</span>
-        </label>
-        
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input type="checkbox" checked={settings.allowBulkAssignment} onChange={e => setSettings({...settings, allowBulkAssignment: e.target.checked})} disabled={!canEdit} />
-          <span className="small">Allow bulk assignments</span>
-        </label>
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span className="small">Reminder frequency:</span>
-        <select value={settings.reminderDays} onChange={e => setSettings({...settings, reminderDays: parseInt(e.target.value)})} disabled={!canEdit}>
-          <option value={1}>Daily</option>
-          <option value={3}>Every 3 days</option>
-          <option value={7}>Weekly</option>
-          <option value={14}>Bi-weekly</option>
-        </select>
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        {canEdit && <button className="btn" onClick={apply}>Save Settings</button>}
-        {!canEdit && <span className="small muted">Read-only access</span>}
-        {canEdit && <button className="btn ghost" onClick={seedSqliteForMe} title="Seed SQLite with a demo batch, docs, and recipients for your account">Seed SQLite (for me)</button>}
-        {canEdit && <button className="btn ghost" onClick={grantCorePermissions} title="Request common Microsoft Graph permissions in one go">Grant Core Permissions</button>}
-      </div>
-
-      {/* SharePoint provisioning UI removed */}
-      {/* Environment summary */}
-      <div className="card" style={{ padding: 12 }}>
-        <div style={{ fontWeight: 700, marginBottom: 6 }}>Environment & Feature Flags</div>
-        <div className="small" style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', rowGap: 4, columnGap: 8 }}>
-          <div>SQLite Enabled</div><div>{isSQLiteEnabled() ? 'true' : 'false'}</div>
-          <div>API Base</div><div>{String(getApiBase() || '—')}</div>
-          <div>Admin Light Mode</div><div>{isAdminLight() ? 'true' : 'false'}</div>
-          <div>Modal Selectors (default)</div><div>{useAdminModalSelectors() ? 'true' : 'false'}</div>
-        </div>
-      </div>
-    </div>
-  );
-};
+// AdminSettings moved to ./admin/AdminSettings
 
 // (UserGroupSelector extracted to ./admin/UserGroupSelector.tsx)
 
@@ -291,89 +41,14 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
 // SharePointBrowser extracted to ./admin/SharePointBrowser
 import SharePointBrowser from './admin/SharePointBrowser';
 
-// Server Library Picker (deduped, server-hosted files)
-const LocalLibraryPicker: React.FC<{ onAdd: (docs: SimpleDoc[]) => void }> = ({ onAdd }) => {
-  const apiBase = (getApiBase() as string) || '';
-  const [loading, setLoading] = useState(false);
-  const [files, setFiles] = useState<Array<{ id: number; name: string; url: string; size?: number; uploadedAt?: string; mime?: string }>>([]);
-  const [q, setQ] = useState('');
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-
-  const load = async () => {
-    if (!apiBase) return;
-    setLoading(true);
-    try {
-      const res = await fetch(`${apiBase}/api/library/list${q ? `?q=${encodeURIComponent(q)}` : ''}`);
-  const j = await res.json();
-  const arr = Array.isArray(j?.files) ? j.files : [];
-  setFiles(arr.map((r: any) => ({ id: Number(r.id), name: String(r.name || 'file'), url: `${apiBase}${r.url}`, size: Number(r.size) || undefined, uploadedAt: r.uploadedAt || r.uploaded_at || undefined })));
-    } catch {
-      setFiles([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-  useEffect(() => { load(); }, [q]);
-
-  const toggle = (id: number) => {
-    setSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
-  };
-  const addSelected = () => {
-    const chosen = files.filter(f => selected.has(f.id));
-    if (chosen.length === 0) return;
-    const docs: SimpleDoc[] = chosen.map(f => ({ title: f.name, url: f.url, version: 1, requiresSignature: false, source: 'local', localFileId: f.id, localUrl: f.url }));
-    onAdd(docs);
-    setSelected(new Set());
-  };
-
-  const fmtSize = (n?: number) => {
-    if (!n || n <= 0) return '';
-    if (n < 1024) return `${n} B`;
-    if (n < 1024*1024) return `${(n/1024).toFixed(1)} KB`;
-    return `${(n/1024/1024).toFixed(1)} MB`;
-  };
-
-  return (
-    <div style={{ border: '1px solid #e0e0e0', borderRadius: 8, padding: 16 }}>
-      <h3 style={{ margin: '0 0 12px 0', fontSize: 16 }}>Library (Server)</h3>
-      <div className="small muted" style={{ marginBottom: 8 }}>Pick from previously saved files (recent first). Served from the app server for reliability.</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, marginBottom: 8 }}>
-        <input placeholder="Search library..." value={q} onChange={e => setQ(e.target.value)} />
-        <button className="btn ghost sm" onClick={load} disabled={loading}>Refresh</button>
-      </div>
-      {loading ? <div className="small muted">Loading...</div> : (
-        files.length === 0 ? <div className="small muted">No files found.</div> : (
-          <div style={{ maxHeight: 240, overflowY: 'auto', display: 'grid', gap: 6 }}>
-            {files.map(f => (
-              <label key={f.id} className="small" style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto', gap: 8, alignItems: 'center', padding: '6px 8px', borderBottom: '1px solid #f5f5f5' }}>
-                <input type="checkbox" checked={selected.has(f.id)} onChange={() => toggle(f.id)} />
-                <div style={{ overflow: 'hidden' }}>
-                  <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
-                  <div className="muted" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <span>{fmtSize(f.size)}</span>
-                    {f.uploadedAt && <span>• {new Date(f.uploadedAt).toLocaleString()}</span>}
-                    <a href={f.url} target="_blank" rel="noreferrer">Preview ↗</a>
-                  </div>
-                </div>
-                <span className="badge">local</span>
-              </label>
-            ))}
-          </div>
-        )
-      )}
-      <div style={{ marginTop: 8, textAlign: 'right' }}>
-        <button className="btn sm" onClick={addSelected} disabled={selected.size === 0}>Add selected</button>
-      </div>
-    </div>
-  );
-};
+// LocalLibraryPicker moved to ./admin/LocalLibraryPicker
 
 // Main Admin Panel Component
 const AdminPanel: React.FC = () => {
   const { role, canSeeAdmin, canEditAdmin, isSuperAdmin, perms } = useRBAC();
   const { account } = useAuthCtx();
   const { externalSupport } = useFeatureFlags();
-  const [activeTab, setActiveTab] = useState<'overview' | 'settings' | 'rbac' | 'manage' | 'batch' | 'analytics' | 'notificationEmails' | 'audit'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'settings' | 'policies' | 'rbac' | 'manage' | 'batch' | 'analytics' | 'notificationEmails' | 'audit'>('overview');
   const [editingBatchId, setEditingBatchId] = useState<string | null>(null);
   const [originalRecipientEmails, setOriginalRecipientEmails] = useState<Set<string>>(new Set());
   const [originalDocUrls, setOriginalDocUrls] = useState<Set<string>>(new Set());
@@ -395,7 +70,7 @@ const AdminPanel: React.FC = () => {
   const MODAL_TOGGLE_KEY = 'sunbeth:admin:useModalSelectors';
   const adminLight = isAdminLight();
   const defaultModalToggle = ((): boolean => {
-  const env = useAdminModalSelectors() ? 'true' : 'false';
+  const env = adminModalSelectorsDefault() ? 'true' : 'false';
     if (env === 'true') return true; if (env === 'false') return false; return true; // default ON to avoid mounting heavy selectors
   })();
   const [useModalSelectors, setUseModalSelectors] = useState<boolean>(() => {
@@ -410,6 +85,10 @@ const AdminPanel: React.FC = () => {
   const [importTotal, setImportTotal] = useState(0);
   const [importDone, setImportDone] = useState(0);
   const [importRows, setImportRows] = useState<Array<{ name: string; status: 'saved' | 'deduped' | 'failed' }>>([]);
+  // Consent Reports filters (optional)
+  const [reportEmail, setReportEmail] = useState<string>('');
+  const [reportSince, setReportSince] = useState<string>('');
+  const [reportUntil, setReportUntil] = useState<string>('');
 
   // Merge helper to unify SharePoint + Local backups into a single logical selection
   const mergeDocuments = (prev: SimpleDoc[], incoming: SimpleDoc[]): SimpleDoc[] => {
@@ -616,6 +295,7 @@ const AdminPanel: React.FC = () => {
     // Settings only if allowed
     if (isSuperAdmin || perms?.manageSettings) {
       base.push({ id: 'settings', label: 'Settings', icon: '⚙️' });
+      base.push({ id: 'policies', label: 'Policies', icon: '📜' } as any);
     }
     // Show Permission tab only if user can manage roles or permissions (Super Admin always)
     if (isSuperAdmin || perms?.manageRoles || perms?.managePermissions) {
@@ -1289,6 +969,73 @@ const AdminPanel: React.FC = () => {
         )}
 
   {activeTab === 'settings' && <AdminSettings canEdit={!!(isSuperAdmin || perms?.manageSettings)} />}
+  {activeTab === 'policies' && (
+          <div style={{ display: 'grid', gap: 16 }}>
+            <div className="card" style={{ padding: 16 }}>
+              <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Recurring Policies</h3>
+              <div className="small muted" style={{ marginBottom: 8 }}>Define annual or recurring acknowledgements at the document level; applies to all employees by default.</div>
+              {/* Lazy import avoid unnecessary bundle growth */}
+              <React.Suspense fallback={<div className="small muted">Loading policies…</div>}>
+                {React.createElement(require('./admin/Policies').default)}
+              </React.Suspense>
+            </div>
+            {(isSuperAdmin || perms?.manageSettings) && (
+              <div className="card" style={{ padding: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <h3 style={{ margin: '0 0 4px 0', fontSize: 16 }}>Consent Reports</h3>
+                    <div className="small muted">Download a court-ready PDF or a JSON export of consent receipts. Use filters to narrow the report.</div>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, marginTop: 12 }}>
+                  <div>
+                    <label className="small" htmlFor="reportEmail">Filter Email</label>
+                    <input id="reportEmail" value={reportEmail}
+                      onChange={e => setReportEmail(e.target.value)}
+                      placeholder="user@company.com" />
+                  </div>
+                  <div>
+                    <label className="small" htmlFor="reportSince">Since (UTC)</label>
+                    <input id="reportSince" type="datetime-local" value={reportSince}
+                      onChange={e => setReportSince(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="small" htmlFor="reportUntil">Until (UTC)</label>
+                    <input id="reportUntil" type="datetime-local" value={reportUntil}
+                      onChange={e => setReportUntil(e.target.value)} />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                  <button className="btn sm" onClick={() => {
+                    try {
+                      const base = (getApiBase() as string) || '';
+                      const admin = account?.username || '';
+                      const qs = new URLSearchParams({ adminEmail: admin });
+                      if (reportEmail.trim()) qs.set('email', reportEmail.trim());
+                      if (reportSince.trim()) qs.set('since', new Date(reportSince).toISOString());
+                      if (reportUntil.trim()) qs.set('until', new Date(reportUntil).toISOString());
+                      qs.set('format', 'pdf');
+                      const url = `${base}/api/admin/consents/report?${qs.toString()}`;
+                      window.open(url, '_blank');
+                    } catch {}
+                  }}>Download PDF Report</button>
+                  <button className="btn ghost sm" onClick={() => {
+                    try {
+                      const base = (getApiBase() as string) || '';
+                      const admin = account?.username || '';
+                      const qs = new URLSearchParams({ adminEmail: admin });
+                      if (reportEmail.trim()) qs.set('email', reportEmail.trim());
+                      if (reportSince.trim()) qs.set('since', new Date(reportSince).toISOString());
+                      if (reportUntil.trim()) qs.set('until', new Date(reportUntil).toISOString());
+                      const url = `${base}/api/admin/consents/export?${qs.toString()}`;
+                      window.open(url, '_blank');
+                    } catch {}
+                  }}>Download JSON</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {activeTab === 'manage' && (
           <div style={{ display: 'grid', gap: 16 }}>
@@ -1366,8 +1113,9 @@ const AdminPanel: React.FC = () => {
             {/* Batch Details */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
               <div>
-                <label className="small">Batch Name:</label>
+                <label className="small" htmlFor="batchName">Batch Name:</label>
                 <input 
+                  id="batchName"
                   type="text" 
                   value={batchForm.name} 
                   onChange={e => setBatchForm({...batchForm, name: e.target.value})}
@@ -1376,8 +1124,9 @@ const AdminPanel: React.FC = () => {
                 />
               </div>
               <div>
-                <label className="small">Description:</label>
+                <label className="small" htmlFor="batchDescription">Description:</label>
                 <input 
+                  id="batchDescription"
                   type="text" 
                   value={batchForm.description} 
                   onChange={e => setBatchForm({...batchForm, description: e.target.value})}
@@ -1386,8 +1135,9 @@ const AdminPanel: React.FC = () => {
                 />
               </div>
               <div>
-                <label className="small">Start Date:</label>
+                <label className="small" htmlFor="batchStart">Start Date:</label>
                 <input 
+                  id="batchStart"
                   type="date" 
                   value={batchForm.startDate} 
                   onChange={e => setBatchForm({...batchForm, startDate: e.target.value})}
@@ -1395,8 +1145,9 @@ const AdminPanel: React.FC = () => {
                 />
               </div>
               <div>
-                <label className="small">Due Date:</label>
+                <label className="small" htmlFor="batchDue">Due Date:</label>
                 <input 
+                  id="batchDue"
                   type="date" 
                   value={batchForm.dueDate} 
                   onChange={e => setBatchForm({...batchForm, dueDate: e.target.value})}
@@ -1902,499 +1653,4 @@ const BusinessesBulkUploadSection: React.FC = () => {
 };
 
 export default AdminPanel;
-
-// --- Admin helpers: Businesses & Batches managers ---
-const RolesManager: React.FC<{ canEdit: boolean; isSuperAdmin: boolean }> = ({ canEdit, isSuperAdmin }) => {
-  const { getToken, login, account } = useAuthCtx();
-  const [roles, setRoles] = useState<DbRole[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [email, setEmail] = useState('');
-  const [role, setRole] = useState<'Admin' | 'Manager'>('Manager');
-  const sqliteEnabled = sqliteOn();
-
-  // User search via Microsoft Graph
-  const [userQuery, setUserQuery] = useState('');
-  const [userResults, setUserResults] = useState<GraphUser[]>([]);
-  const [userLoading, setUserLoading] = useState(false);
-  const [userError, setUserError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<{ department?: string; jobTitle?: string; location?: string }>({});
-  const [org, setOrg] = useState<{ departments: string[]; jobTitles: string[]; locations: string[] }>({ departments: [], jobTitles: [], locations: [] });
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-
-  const load = async () => {
-    if (!sqliteEnabled) { setRoles([]); return; }
-    try {
-      const list = await getRoles();
-      setRoles(Array.isArray(list) ? list : []);
-    } catch {
-      setRoles([]);
-    }
-  };
-  useEffect(() => { load(); }, [sqliteEnabled]);
-
-  // Load organization structure for filters
-  useEffect(() => {
-    (async () => {
-      try {
-        const token = await getToken(['User.Read.All']);
-        if (!token) return;
-        const o = await getOrganizationStructure(token);
-        setOrg(o);
-      } catch {}
-    })();
-  }, []);
-
-  const searchUsers = async () => {
-    setUserError(null);
-    if (!userQuery.trim()) { setUserResults([]); return; }
-    setUserLoading(true);
-    try {
-      const token = await getToken(['User.Read.All']);
-      if (!token) throw new Error('Sign-in required');
-      const results = await getUsers(token, { search: userQuery.trim(), department: filters.department, jobTitle: filters.jobTitle, location: filters.location });
-      setUserResults(Array.isArray(results) ? results.slice(0, 200) : []);
-    } catch (e: any) {
-      setUserError(typeof e?.message === 'string' ? e.message : 'Failed to search users');
-      setUserResults([]);
-    } finally {
-      setUserLoading(false);
-    }
-  };
-
-  // Debounce search on inputs
-  useEffect(() => {
-    const t = setTimeout(() => { void searchUsers(); }, 450);
-    return () => clearTimeout(t);
-  }, [userQuery, filters.department, filters.jobTitle, filters.location]);
-
-  const add = async () => {
-    if (!canEdit || !sqliteEnabled) return;
-    const e = email.trim().toLowerCase();
-    if (!e || !e.includes('@')) { showToast('Enter a valid email', 'warning'); return; }
-    setBusy(true);
-    try {
-      await createRole(e, role);
-      setEmail('');
-      await load();
-      showToast('Role added', 'success');
-    } catch {
-      showToast('Failed to add role', 'error');
-    } finally { setBusy(false); }
-  };
-
-  const assignToUser = async (u: GraphUser, r: 'Admin' | 'Manager') => {
-    if (!canEdit || !sqliteEnabled) return;
-    const addr = (u.mail || u.userPrincipalName || '').trim().toLowerCase();
-    if (!addr) { showToast('User has no email/UPN', 'warning'); return; }
-    setBusy(true);
-    try {
-      // If user already has a role, replace it when different
-      const existing = roles.find(x => (x.email || '').toLowerCase() === addr);
-      if (existing) {
-        if (existing.role === r) {
-          showToast(`${u.displayName || addr} already ${r}`, 'info');
-          setBusy(false); return;
-        }
-        try { await deleteRole(existing.id); } catch {}
-      }
-      await createRole(addr, r);
-      await load();
-      showToast(`Assigned ${r} to ${u.displayName || addr}`, 'success');
-    } catch {
-      showToast('Failed to assign role', 'error');
-    } finally { setBusy(false); }
-  };
-
-  const assignBulk = async (r: 'Admin' | 'Manager') => {
-    if (!canEdit || !sqliteEnabled || selected.size === 0) return;
-    setBusy(true);
-    try {
-      for (const id of Array.from(selected)) {
-        const u = userResults.find(x => x.id === id);
-        if (u) { await assignToUser(u, r); }
-      }
-      setSelected(new Set());
-      showToast(`Assigned ${r} to ${selected.size} user(s)`, 'success');
-    } catch {
-      showToast('Bulk assign failed', 'error');
-    } finally { setBusy(false); }
-  };
-
-  const toggleSel = (id: string) => {
-    setSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
-  };
-
-  const exportRolesCsv = () => {
-    const rows = [['email','role']].concat(roles.map(r => [r.email, r.role]));
-    const csv = rows.map(r => r.map(v => '"' + String(v ?? '').replace(/"/g,'""') + '"').join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'roles.csv'; a.click(); URL.revokeObjectURL(url);
-  };
-
-  const remove = async (id: number) => {
-    if (!canEdit || !sqliteEnabled) return;
-    setBusy(true);
-    try { await deleteRole(id); await load(); showToast('Role removed', 'success'); }
-    catch { showToast('Failed to remove role', 'error'); }
-    finally { setBusy(false); }
-  };
-
-  const grouped = roles.reduce((acc: Record<string, DbRole[]>, r) => {
-    const key = r.role || 'Unknown';
-    (acc[key] = acc[key] || []).push(r);
-    return acc;
-  }, {} as Record<string, DbRole[]>);
-
-  if (!sqliteEnabled) return <div className="small muted">Enable SQLite to manage roles.</div>;
-  return (
-    <div>
-      {/* Directory user search and quick-assign */}
-      <div className="card" style={{ padding: 12, marginBottom: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <div>
-            <div style={{ fontWeight: 700 }}>Find users</div>
-            <div className="small muted">Search your directory and assign Admin/Manager</div>
-          </div>
-          {!account && (
-            <button className="btn ghost sm" onClick={() => login()}>Sign in</button>
-          )}
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, marginTop: 8 }}>
-          <input
-            placeholder="Search by name or email"
-            value={userQuery}
-            onChange={e => setUserQuery(e.target.value)}
-          />
-          <button className="btn sm" onClick={searchUsers} disabled={userLoading}>Search</button>
-        </div>
-        {/* Filters */}
-        <div className="small" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-          <select value={filters.department || ''} onChange={e => setFilters(f => ({ ...f, department: e.target.value || undefined }))}>
-            <option value="">All departments</option>
-            {org.departments.map(d => <option key={d} value={d}>{d}</option>)}
-          </select>
-          <select value={filters.jobTitle || ''} onChange={e => setFilters(f => ({ ...f, jobTitle: e.target.value || undefined }))}>
-            <option value="">All job titles</option>
-            {org.jobTitles.map(j => <option key={j} value={j}>{j}</option>)}
-          </select>
-          <select value={filters.location || ''} onChange={e => setFilters(f => ({ ...f, location: e.target.value || undefined }))}>
-            <option value="">All locations</option>
-            {org.locations.map(l => <option key={l} value={l}>{l}</option>)}
-          </select>
-        </div>
-        {/* Bulk actions */}
-        {selected.size > 0 && (
-          <div className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
-            <span>{selected.size} selected</span>
-            <button className="btn ghost sm" onClick={() => assignBulk('Manager')} disabled={!canEdit || busy}>Assign Manager</button>
-            <button className="btn ghost sm" onClick={() => assignBulk('Admin')} disabled={!canEdit || busy}>Assign Admin</button>
-          </div>
-        )}
-        {userError && <div className="small" style={{ color: '#d33', marginTop: 6 }}>{userError}</div>}
-        {userLoading && <div className="small muted" style={{ marginTop: 6 }}>Loading...</div>}
-        {!userLoading && userResults.length > 0 && (
-          <div style={{ marginTop: 8, maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 6 }}>
-            {userResults.map(u => {
-              const email = (u.mail || u.userPrincipalName || '').trim();
-              const existing = roles.find(r => (r.email || '').toLowerCase() === (email || '').toLowerCase());
-              return (
-                <div key={u.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr auto auto', gap: 8, alignItems: 'center' }}>
-                  <input type="checkbox" checked={selected.has(u.id)} onChange={() => toggleSel(u.id)} />
-                  <div>
-                    <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.displayName || email || u.id}</div>
-                    <div className="small muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</div>
-                    {existing && <span className="badge" style={{ marginTop: 4 }}>{existing.role}</span>}
-                  </div>
-                  {!existing && (
-                    <button className="btn ghost sm" onClick={() => assignToUser(u, 'Manager')} disabled={!canEdit || busy}>Assign Manager</button>
-                  )}
-                  {!existing && (
-                    <button className="btn ghost sm" onClick={() => assignToUser(u, 'Admin')} disabled={!canEdit || busy}>Assign Admin</button>
-                  )}
-                  {existing && (
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <button className="btn ghost sm" onClick={() => assignToUser(u, existing.role === 'Admin' ? 'Manager' : 'Admin')} disabled={!canEdit || busy}>Change to {existing.role === 'Admin' ? 'Manager' : 'Admin'}</button>
-                      <button className="btn ghost sm" onClick={async () => { try { setBusy(true); await deleteRole(existing.id); await load(); showToast('Role removed', 'success'); } catch { showToast('Failed to remove role', 'error'); } finally { setBusy(false); } }} disabled={!canEdit || busy}>Remove</button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
-        <input type="email" placeholder="user@domain.com" value={email} onChange={e => setEmail(e.target.value)} style={{ padding: 8, border: '1px solid #ddd', borderRadius: 6 }} />
-        <select value={role} onChange={e => setRole(e.target.value as any)} style={{ padding: 8, border: '1px solid #ddd', borderRadius: 6 }}>
-          <option value="Manager">Manager</option>
-          <option value="Admin">Admin</option>
-        </select>
-        <button className="btn sm" onClick={add} disabled={!canEdit || busy}>Add</button>
-        {!canEdit && <span className="small muted">Read-only</span>}
-        <button className="btn ghost sm" onClick={exportRolesCsv} title="Export current role assignments as CSV">Export CSV</button>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
-        {['Admin', 'Manager'].map(k => (
-          <div key={k} className="card" style={{ padding: 12 }}>
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>{k}s</div>
-            {Array.isArray(grouped[k]) && grouped[k].length > 0 ? (
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                {grouped[k].map(r => (
-                  <li key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid #f2f2f2' }}>
-                    <span className="small">{r.email}</span>
-                    {canEdit && <button className="btn ghost sm" onClick={() => remove(r.id)} disabled={busy}>Remove</button>}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <div className="small muted">No {k.toLowerCase()}s assigned</div>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-type Biz = { id: number; name: string; code?: string; isActive?: boolean; description?: string };
-const apiBase = () => (getApiBase() as string) || '';
-const sqliteOn = () => (process.env.REACT_APP_ENABLE_SQLITE === 'true') && !!process.env.REACT_APP_API_BASE;
-
-const BusinessesManager: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
-  const [items, setItems] = useState<Biz[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState<{ name: string; code: string; isActive: boolean; description: string }>({ name: '', code: '', isActive: true, description: '' });
-  const [editRow, setEditRow] = useState<Record<number, Partial<Biz>>>({});
-
-  const load = async () => {
-    if (!sqliteOn()) return;
-    try { const res = await fetch(`${apiBase()}/api/businesses`); const j = await res.json(); setItems(Array.isArray(j) ? j : []); } catch { setItems([]); }
-  };
-  useEffect(() => { load(); }, []);
-
-  const create = async () => {
-    if (!canEdit || !sqliteOn()) return;
-    const name = form.name.trim(); if (!name) { showToast('Enter a business name', 'warning'); return; }
-    setBusy(true);
-    try {
-      await createBusiness({ 
-        name, 
-        code: form.code || undefined, 
-        isActive: !!form.isActive, 
-        description: form.description || undefined 
-      });
-      setForm({ name: '', code: '', isActive: true, description: '' });
-      await load();
-      showToast('Business created', 'success');
-    } catch { showToast('Failed to create business', 'error'); }
-    finally { setBusy(false); }
-  };
-
-  const save = async (id: number) => {
-    if (!canEdit || !sqliteOn()) return;
-    const row = editRow[id]; if (!row) return;
-    setBusy(true);
-    try {
-      await updateBusiness(id, row);
-      setEditRow(prev => { const p = { ...prev }; delete p[id]; return p; });
-      await load();
-      showToast('Business updated', 'success');
-    } catch { showToast('Failed to update business', 'error'); }
-    finally { setBusy(false); }
-  };
-
-  const del = async (id: number) => {
-    if (!canEdit || !sqliteOn()) return;
-    const ok = await confirmDialog('Delete this business?', 'This will unassign it from any recipients.', 'Delete', 'Cancel', { icon: 'warning' as any });
-    if (!ok) return;
-    setBusy(true);
-    try {
-      await deleteBusiness(id);
-      await load();
-      showToast('Business deleted', 'success');
-    } catch { showToast('Failed to delete business', 'error'); }
-    finally { setBusy(false); }
-  };
-
-  if (!sqliteOn()) return <div className="small muted">Enable SQLite to manage businesses.</div>;
-  return (
-    <div style={{ display: 'grid', gap: 12 }}>
-      {/* Create form */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr 1fr auto', gap: 8, alignItems: 'center' }}>
-        <input placeholder="Name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
-        <input placeholder="Code (optional)" value={form.code} onChange={e => setForm({ ...form, code: e.target.value })} />
-        <input placeholder="Description" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
-        <button className="btn sm" onClick={create} disabled={!canEdit || busy}>Add</button>
-      </div>
-      {/* List */}
-      <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid #eee', borderRadius: 6 }}>
-        {items.length === 0 ? (
-          <div className="small muted" style={{ padding: 8 }}>No businesses.</div>
-        ) : items.map(b => {
-          const row = editRow[b.id] || {};
-          const isEditing = editRow[b.id] != null;
-          return (
-            <div key={b.id} style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.8fr 1fr auto auto', gap: 8, alignItems: 'center', padding: 8, borderBottom: '1px solid #f5f5f5' }}>
-              {isEditing ? (
-                <>
-                  <input defaultValue={b.name} onChange={e => setEditRow(prev => ({ ...prev, [b.id]: { ...prev[b.id], name: e.target.value } }))} />
-                  <input defaultValue={b.code || ''} onChange={e => setEditRow(prev => ({ ...prev, [b.id]: { ...prev[b.id], code: e.target.value } }))} />
-                  <input defaultValue={b.description || ''} onChange={e => setEditRow(prev => ({ ...prev, [b.id]: { ...prev[b.id], description: e.target.value } }))} />
-                  <label className="small" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <input type="checkbox" defaultChecked={!!b.isActive} onChange={e => setEditRow(prev => ({ ...prev, [b.id]: { ...prev[b.id], isActive: e.target.checked } }))} /> Active
-                  </label>
-                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                    <button className="btn ghost sm" onClick={() => setEditRow(prev => { const p = { ...prev }; delete p[b.id]; return p; })}>Cancel</button>
-                    <button className="btn sm" onClick={() => save(b.id)} disabled={busy}>Save</button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.name}</div>
-                  <div className="small muted">{b.code || '—'}</div>
-                  <div className="small muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.description || '—'}</div>
-                  <span className="badge" style={{ background: b.isActive ? '#d4edda' : '#e2e3e5', color: b.isActive ? '#155724' : '#383d41' }}>{b.isActive ? 'Active' : 'Inactive'}</span>
-                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                    <button className="btn ghost sm" onClick={() => setEditRow(prev => ({ ...prev, [b.id]: {} }))} disabled={!canEdit}>Edit</button>
-                    <button className="btn ghost sm" onClick={() => del(b.id)} disabled={!canEdit}>Delete</button>
-                  </div>
-                </>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-};
-
-const ManageBatches: React.FC<{ canEdit: boolean; onEdit: (id: string) => void; onClone: (id: string) => void }> = ({ canEdit, onEdit, onClone }) => {
-  const [items, setItems] = useState<Array<{ toba_batchid: string; toba_name: string; toba_startdate?: string; toba_duedate?: string; toba_status?: string }>>([]);
-  const [busy, setBusy] = useState(false);
-  const [editing, setEditing] = useState<Record<string, { name: string; startDate: string; dueDate: string; status: string; description: string }>>({});
-  const [recOpen, setRecOpen] = useState<{ open: boolean; forBatch?: string; rows: any[] }>({ open: false, rows: [] });
-  const load = async () => {
-    if (!sqliteOn()) return;
-    try {
-      const res = await fetch(`${apiBase()}/api/batches`);
-      const j = await res.json();
-      setItems(Array.isArray(j) ? j : []);
-    } catch { setItems([]); }
-  };
-  useEffect(() => { load(); }, []);
-
-  const del = async (id: string) => {
-    if (!canEdit || !sqliteOn()) return;
-    const ok = await confirmDialog('Delete this batch?', 'This will remove its documents, recipients, and acknowledgements.', 'Delete', 'Cancel', { icon: 'warning' as any });
-    if (!ok) return;
-    setBusy(true);
-    try {
-      const res = await fetch(`${apiBase()}/api/batches/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('delete_failed');
-      await load();
-      showToast('Batch deleted', 'success');
-    } catch {
-      showToast('Failed to delete batch', 'error');
-    } finally { setBusy(false); }
-  };
-  const openRecipients = async (id: string) => {
-    try {
-      const res = await fetch(`${apiBase()}/api/recipients`);
-      const j = await res.json();
-      const rows = (Array.isArray(j) ? j : []).filter((r: any) => String(r.batchId) === String(id));
-      setRecOpen({ open: true, forBatch: id, rows });
-    } catch { setRecOpen({ open: true, forBatch: id, rows: [] }); }
-  };
-
-  const save = async (id: string) => {
-    const row = editing[id]; if (!row) return;
-    setBusy(true);
-    try {
-      const payload = {
-        name: row.name,
-        startDate: row.startDate || null,
-        dueDate: row.dueDate || null,
-        status: row.status ? Number(row.status) : 1,
-        description: row.description || null
-      };
-      const res = await fetch(`${apiBase()}/api/batches/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      if (!res.ok) throw new Error('update_failed');
-      setEditing(prev => { const p = { ...prev }; delete p[id]; return p; });
-      await load();
-      showToast('Batch updated', 'success');
-    } catch {
-      showToast('Failed to update batch', 'error');
-    } finally { setBusy(false); }
-  };
-
-  if (!sqliteOn()) return <div className="small muted">Enable SQLite to manage batches.</div>;
-  return (
-    <>
-    <div style={{ maxHeight: 420, overflowY: 'auto', border: '1px solid #eee', borderRadius: 6 }}>
-      {items.length === 0 ? (
-        <div className="small muted" style={{ padding: 8 }}>No batches.</div>
-      ) : items.map(b => {
-        const row = editing[b.toba_batchid];
-        const isEditing = !!row;
-        return (
-          <div key={b.toba_batchid} style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.9fr 0.9fr 0.7fr 1.4fr auto', gap: 8, alignItems: 'center', padding: 8, borderBottom: '1px solid #f5f5f5' }}>
-            {isEditing ? (
-              <>
-                <input defaultValue={b.toba_name} onChange={e => setEditing(prev => ({ ...prev, [b.toba_batchid]: { ...(prev[b.toba_batchid] || {}), name: e.target.value } }))} />
-                <input type="date" defaultValue={b.toba_startdate || ''} onChange={e => setEditing(prev => ({ ...prev, [b.toba_batchid]: { ...(prev[b.toba_batchid] || {}), startDate: e.target.value } }))} />
-                <input type="date" defaultValue={b.toba_duedate || ''} onChange={e => setEditing(prev => ({ ...prev, [b.toba_batchid]: { ...(prev[b.toba_batchid] || {}), dueDate: e.target.value } }))} />
-                <select defaultValue={b.toba_status || '1'} onChange={e => setEditing(prev => ({ ...prev, [b.toba_batchid]: { ...(prev[b.toba_batchid] || {}), status: e.target.value } }))}>
-                  <option value="1">Active</option>
-                  <option value="0">Inactive</option>
-                </select>
-                <input placeholder="Description" onChange={e => setEditing(prev => ({ ...prev, [b.toba_batchid]: { ...(prev[b.toba_batchid] || {}), description: e.target.value } }))} />
-                <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                  <button className="btn ghost sm" onClick={() => setEditing(prev => { const p = { ...prev }; delete p[b.toba_batchid]; return p; })}>Cancel</button>
-                  <button className="btn sm" onClick={() => save(b.toba_batchid)} disabled={!canEdit || busy}>Save</button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{b.toba_name}</div>
-                <div className="small muted">{b.toba_startdate || '—'}</div>
-                <div className="small muted">{b.toba_duedate || '—'}</div>
-                <span className="badge" style={{ background: (b.toba_status || '1') === '1' ? '#d4edda' : '#e2e3e5', color: (b.toba_status || '1') === '1' ? '#155724' : '#383d41' }}>{(b.toba_status || '1') === '1' ? 'Active' : 'Inactive'}</span>
-                <div className="small muted" />
-                <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                  <a href={`/batch/${b.toba_batchid}`}><button className="btn ghost sm">View</button></a>
-                  <button className="btn ghost sm" onClick={() => openRecipients(b.toba_batchid)}>Recipients</button>
-                  <button className="btn ghost sm" onClick={() => onEdit(b.toba_batchid)} disabled={!canEdit}>Edit</button>
-                  <button className="btn ghost sm" onClick={() => onClone(b.toba_batchid)} disabled={!canEdit}>Clone</button>
-                  <button className="btn ghost sm" onClick={() => del(b.toba_batchid)} disabled={!canEdit || busy}>Delete</button>
-                </div>
-              </>
-            )}
-          </div>
-        );
-      })}
-    </div>
-    {/* Recipients Modal */}
-    <Modal open={recOpen.open} onClose={() => setRecOpen({ open: false, rows: [] })} title={`Recipients for Batch ${recOpen.forBatch || ''}`} width={700}>
-      {recOpen.rows.length === 0 ? (
-        <div className="small muted">No recipients found.</div>
-      ) : (
-        <div style={{ maxHeight: 360, overflowY: 'auto', display: 'grid', gap: 8 }}>
-          {recOpen.rows.map((r: any, i: number) => (
-            <div key={i} style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr 1fr 1fr', gap: 8 }}>
-              <div>
-                <div style={{ fontWeight: 500 }}>{r.displayName || r.email}</div>
-                <div className="small muted">{r.email}</div>
-              </div>
-              <div className="small muted">{r.department || '—'}</div>
-              <div className="small muted">{r.jobTitle || '—'}</div>
-              <div className="small muted">{r.primaryGroup || '—'}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </Modal>
-    </>
-  );
-};
+ 
