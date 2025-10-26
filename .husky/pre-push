@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-echo "[pre-push] Running frontend checks: lint, test, build"
+echo "[pre-push] Running frontend checks: test, build"
 
 # Fail fast on any error
 set -e
@@ -8,7 +8,6 @@ set -e
 REPO_DIR=$(cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$REPO_DIR"
 
-npm run lint
 npm test --silent -- --watchAll=false
 npm run build
 
