@@ -1,0 +1,39 @@
+{
+  "env": {
+    "browser": true,
+    "es2022": true,
+    "jest": true
+  },
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "ecmaFeatures": { "jsx": true },
+    "ecmaVersion": 2022,
+    "sourceType": "module"
+  },
+  "settings": {
+    "react": { "version": "detect" }
+  },
+  "plugins": [
+    "@typescript-eslint",
+    "react",
+    "react-hooks",
+    "jsx-a11y"
+  ],
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "plugin:react/recommended",
+    "plugin:react-hooks/recommended",
+    "plugin:jsx-a11y/recommended",
+    "prettier"
+  ],
+  "rules": {
+    "max-lines": ["warn", { "max": 300, "skipBlankLines": true, "skipComments": true }],
+    "max-lines-per-function": ["warn", { "max": 50, "skipBlankLines": true, "skipComments": true }],
+    "complexity": ["warn", 10],
+    "max-depth": ["warn", 3],
+    "react/prop-types": "off",
+    "@typescript-eslint/no-explicit-any": "off"
+  },
+  "ignorePatterns": ["build/**", "node_modules/**", "scripts/**"]
+}

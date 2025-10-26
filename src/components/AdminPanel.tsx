@@ -1,87 +1,8 @@
-// --- Notification Emails Tab ---
-const NotificationEmailsTab: React.FC = () => {
-  const [emails, setEmails] = useState<string[]>([]);
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const apiBase = (getApiBase() as string) || '';
-
-  const loadEmails = async () => {
-    setLoading(true);
-    setStatus(null);
-    try {
-      const res = await fetch(`${apiBase}/api/notification-emails`);
-      const j = await res.json();
-      setEmails(Array.isArray(j?.emails) ? j.emails : []);
-    } catch (e) {
-      setStatus('Failed to load emails');
-    } finally {
-      setLoading(false);
-    }
-  };
-  useEffect(() => { loadEmails(); }, []);
-
-  const saveEmails = async (next: string[]) => {
-    setSaving(true);
-    setStatus(null);
-    try {
-      const res = await fetch(`${apiBase}/api/notification-emails`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ emails: next })
-      });
-      if (!res.ok) throw new Error('Save failed');
-      setEmails(next);
-      setStatus('Saved!');
-    } catch (e) {
-      setStatus('Failed to save');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const addEmail = () => {
-    const val = input.trim().toLowerCase();
-    if (!val || !val.includes('@') || emails.includes(val)) return;
-    const next = [...emails, val];
-    setEmails(next);
-    setInput('');
-    saveEmails(next);
-  };
-  const removeEmail = (email: string) => {
-    const next = emails.filter(e => e !== email);
-    setEmails(next);
-    saveEmails(next);
-  };
-
-  return (
-    <div className="card" style={{ maxWidth: 480, margin: '0 auto', padding: 24 }}>
-      <h3 style={{ margin: '0 0 12px 0', fontSize: 18 }}>Notification Emails</h3>
-      <div className="small muted" style={{ marginBottom: 12 }}>
-        These emails will receive admin notifications (batch completions, nudges, etc). Changes are saved instantly.
-      </div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        <input type="email" value={input} onChange={e => setInput(e.target.value)} placeholder="admin@domain.com" style={{ flex: 1, padding: 8, border: '1px solid #ddd', borderRadius: 4 }} disabled={saving} />
-        <button className="btn sm" onClick={addEmail} disabled={saving || !input.trim() || !input.includes('@') || emails.includes(input.trim().toLowerCase())}>Add</button>
-      </div>
-      {loading ? <div className="small muted">Loading...</div> : (
-        emails.length === 0 ? <div className="small muted">No notification emails set.</div> : (
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {emails.map(email => (
-              <li key={email} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <span style={{ flex: 1 }}>{email}</span>
-                <button className="btn ghost sm" onClick={() => removeEmail(email)} disabled={saving}>Remove</button>
-              </li>
-            ))}
-          </ul>
-        )
-      )}
-      {status && <div className="small muted" style={{ marginTop: 8 }}>{status}</div>}
-    </div>
-  );
-};
 import React, { useEffect, useState } from 'react';
+import { NotificationEmailsTab } from './admin/NotificationEmailsTab';
+import { DocumentListEditor, type SimpleDoc } from './admin/DocumentListEditor';
+import { UserGroupSelector } from './admin/UserGroupSelector';
+import { useAuth as useAuthCtx } from '../context/AuthContext';
 import { useRBAC } from '../context/RBACContext';
 // import { useAuth } from '../context/AuthContext';
 import { GraphUser, GraphGroup, getUsers, getGroups, getOrganizationStructure, UserSearchFilters, getGroupMembers } from '../services/graphUserService';
@@ -129,6 +50,10 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
   const [extSaving, setExtSaving] = useState<boolean>(false);
   const apiBase = (getApiBase() as string) || '';
 
+  // Legal consent document
+  const [legalDoc, setLegalDoc] = useState<{ fileId: number | null; url: string | null; name: string | null }>({ fileId: null, url: null, name: null });
+  const [legalBusy, setLegalBusy] = useState<boolean>(false);
+
 
   useEffect(() => {
     try {
@@ -154,6 +79,18 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
       } finally {
         setExtLoading(false);
       }
+    })();
+  }, [apiBase]);
+
+  // Load current legal consent document
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!apiBase) return;
+        const res = await fetch(`${apiBase}/api/settings/legal-consent`, { cache: 'no-store' });
+        const j = await res.json();
+        setLegalDoc({ fileId: j?.fileId ?? null, url: j?.url ? (apiBase + j.url) : null, name: j?.name ?? null });
+      } catch {}
     })();
   }, [apiBase]);
 
@@ -237,6 +174,61 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
           </label>
         </div>
       </div>
+      {/* Legal Consent Document */}
+      <div className="card" style={{ padding: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontWeight: 700 }}>Legal Consent Document</div>
+            <div className="small muted">PDF shown to users from the consent dialog. Applies globally.</div>
+            {legalDoc?.url ? (
+              <div className="small" style={{ marginTop: 6 }}>
+                Current: <a href={legalDoc.url} target="_blank" rel="noreferrer">{legalDoc.name || 'document.pdf'} ↗</a>
+              </div>
+            ) : (
+              <div className="small muted" style={{ marginTop: 6 }}>Not set</div>
+            )}
+          </div>
+          <div>
+            <label className="btn sm" style={{ cursor: canEdit ? 'pointer' : 'not-allowed', opacity: canEdit ? 1 : .6 }}>
+              {legalBusy ? 'Uploading…' : (legalDoc?.fileId ? 'Replace PDF' : 'Upload PDF')}
+              <input type="file" accept="application/pdf" style={{ display: 'none' }} disabled={!canEdit || legalBusy} onChange={async (e) => {
+                try {
+                  const file = e.target.files && e.target.files[0];
+                  if (!file || !apiBase) return;
+                  setLegalBusy(true);
+                  const fd = new FormData();
+                  fd.append('file', file);
+                  const up = await fetch(`${apiBase}/api/files/upload`, { method: 'POST', body: fd });
+                  const uj = await up.json();
+                  if (!up.ok || !uj?.id) { showToast('Upload failed', 'error'); return; }
+                  const put = await fetch(`${apiBase}/api/settings/legal-consent`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileId: uj.id }) });
+                  if (!put.ok) { showToast('Save failed', 'error'); return; }
+                  setLegalDoc({ fileId: uj.id, url: `${apiBase}/api/files/${uj.id}`, name: file.name });
+                  showToast('Legal document saved', 'success');
+                } catch {
+                  showToast('Upload failed', 'error');
+                } finally {
+                  setLegalBusy(false);
+                  try { (e.target as HTMLInputElement).value = ''; } catch {}
+                }
+              }} />
+            </label>
+            {legalDoc?.fileId && (
+              <button className="btn ghost sm" style={{ marginLeft: 8 }} disabled={!canEdit || legalBusy} onClick={async () => {
+                try {
+                  if (!apiBase) return;
+                  setLegalBusy(true);
+                  const put = await fetch(`${apiBase}/api/settings/legal-consent`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileId: null }) });
+                  if (!put.ok) { showToast('Failed to clear', 'error'); return; }
+                  setLegalDoc({ fileId: null, url: null, name: null });
+                  showToast('Cleared legal document', 'success');
+                } catch { showToast('Failed to clear', 'error'); }
+                finally { setLegalBusy(false); }
+              }}>Clear</button>
+            )}
+          </div>
+        </div>
+      </div>
       
       <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -292,675 +284,12 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ canEdit }) => {
   );
 };
 
-// User/Group Selection Component
-const UserGroupSelector: React.FC<{ onSelectionChange: (selection: any) => void }> = ({ onSelectionChange }) => {
-  const { getToken, login, account } = useAuthCtx();
-  const [loading, setLoading] = useState(false);
-  const [hadError, setHadError] = useState<string | null>(null);
-  const [tab, setTab] = useState<'users' | 'groups' | 'structure'>('users');
-  const [users, setUsers] = useState<GraphUser[]>([]);
-  const [groups, setGroups] = useState<GraphGroup[]>([]);
-  const [orgStructure, setOrgStructure] = useState<{ departments: string[]; jobTitles: string[]; locations: string[] }>({ departments: [], jobTitles: [], locations: [] });
-  const [filters, setFilters] = useState<UserSearchFilters>({});
-  const [localSearch, setLocalSearch] = useState<string>('');
-  const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
-  const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
-  const [usersPage, setUsersPage] = useState<number>(1);
-  const [groupsPage, setGroupsPage] = useState<number>(1);
-  const [groupSearch, setGroupSearch] = useState<string>('');
-  const pageSize = 50;
+// (UserGroupSelector extracted to ./admin/UserGroupSelector.tsx)
 
-  const loadData = async () => {
-    setLoading(true);
-    setHadError(null);
-    try {
-      const token = await getToken(['User.Read.All', 'Group.Read.All']);
-      if (!token) throw new Error('No token available');
+// (DocumentListEditor extracted to ./admin/DocumentListEditor.tsx)
 
-      const [usersData, groupsData, structureData] = await Promise.all([
-        getUsers(token, filters),
-        getGroups(token),
-        getOrganizationStructure(token)
-      ]);
-
-      setUsers(usersData);
-      setGroups(groupsData);
-      setOrgStructure(structureData);
-    } catch (error: any) {
-      console.error('Failed to load user/group data:', error);
-      const msg = typeof error?.message === 'string' ? error.message : '';
-      const hint = msg.includes('No active account')
-        ? 'Please sign in to continue.'
-        : 'Ask your admin to grant Microsoft Graph permissions (User.Read.All and Group.Read.All) to this app.';
-      setHadError(`${msg || 'Failed to load user data.'} ${hint}`.trim());
-  showToast(`Failed to load user data. ${hint}`, 'error');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadData();
-    setUsersPage(1);
-    setGroupsPage(1);
-  }, [filters]);
-
-  // Debounce search input before applying to filters
-  useEffect(() => {
-    const h = setTimeout(() => {
-      setFilters(prev => ({ ...prev, search: localSearch || undefined }));
-    }, 300);
-    return () => clearTimeout(h);
-  }, [localSearch]);
-
-  useEffect(() => {
-    onSelectionChange({
-      users: Array.from(selectedUsers).map(id => users.find(u => u.id === id)!).filter(Boolean),
-      groups: Array.from(selectedGroups).map(id => groups.find(g => g.id === id)!).filter(Boolean)
-    });
-  }, [selectedUsers, selectedGroups, users, groups]);
-
-  const toggleUser = (userId: string) => {
-    const newSelection = new Set(selectedUsers);
-    if (newSelection.has(userId)) {
-      newSelection.delete(userId);
-    } else {
-      newSelection.add(userId);
-    }
-    setSelectedUsers(newSelection);
-  };
-
-  const toggleGroup = (groupId: string) => {
-    const newSelection = new Set(selectedGroups);
-    if (newSelection.has(groupId)) {
-      newSelection.delete(groupId);
-    } else {
-      newSelection.add(groupId);
-    }
-    setSelectedGroups(newSelection);
-  };
-
-  return (
-    <div style={{ border: '1px solid #e0e0e0', borderRadius: 8, padding: 16 }}>
-      <h3 style={{ margin: '0 0 16px 0', fontSize: 16 }}>Assign to Users & Groups</h3>
-      <div style={{ marginBottom: 12 }}>
-        {!account && (
-          <div className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#fff3cd', padding: 8, borderRadius: 6, border: '1px solid #ffeeba' }}>
-            <span>You're not signed in.</span>
-            <button className="btn sm" onClick={() => login().then(() => loadData())}>Sign in</button>
-          </div>
-        )}
-        {hadError && (
-          <div className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#f8d7da', padding: 8, borderRadius: 6, border: '1px solid #f5c6cb', marginTop: 8 }}>
-            <span style={{ flex: 1 }}>{hadError}</span>
-            <button className="btn ghost sm" onClick={() => loadData()}>Retry</button>
-          </div>
-        )}
-      </div>
-      
-      {/* Tab Navigation */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, borderBottom: '1px solid #e0e0e0' }}>
-        {(['users', 'groups', 'structure'] as const).map(t => (
-          <button 
-            key={t}
-            className={tab === t ? 'btn sm' : 'btn ghost sm'}
-            onClick={() => setTab(t)}
-          >
-            {t === 'users' ? `Users (${users.length})` : t === 'groups' ? `Groups (${groups.length})` : 'Filters'}
-          </button>
-        ))}
-      </div>
-
-      {loading && <div className="small muted">Loading...</div>}
-
-      {/* Filters Tab */}
-      {tab === 'structure' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <div>
-            <label className="small">Search:</label>
-            <input 
-              type="text" 
-              placeholder="Name, email..." 
-              value={localSearch}
-              onChange={e => setLocalSearch(e.target.value)}
-              style={{ width: '100%', padding: 6, border: '1px solid #ddd', borderRadius: 4 }}
-            />
-          </div>
-          <div>
-            <label className="small">Department:</label>
-            <select 
-              value={filters.department || ''} 
-              onChange={e => setFilters({...filters, department: e.target.value || undefined})}
-              style={{ width: '100%', padding: 6, border: '1px solid #ddd', borderRadius: 4 }}
-            >
-              <option value="">All Departments</option>
-              {orgStructure.departments.map(dept => <option key={dept} value={dept}>{dept}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="small">Job Title:</label>
-            <select 
-              value={filters.jobTitle || ''} 
-              onChange={e => setFilters({...filters, jobTitle: e.target.value || undefined})}
-              style={{ width: '100%', padding: 6, border: '1px solid #ddd', borderRadius: 4 }}
-            >
-              <option value="">All Titles</option>
-              {orgStructure.jobTitles.map(title => <option key={title} value={title}>{title}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="small">Location:</label>
-            <select 
-              value={filters.location || ''} 
-              onChange={e => setFilters({...filters, location: e.target.value || undefined})}
-              style={{ width: '100%', padding: 6, border: '1px solid #ddd', borderRadius: 4 }}
-            >
-              <option value="">All Locations</option>
-              {orgStructure.locations.map(loc => <option key={loc} value={loc}>{loc}</option>)}
-            </select>
-          </div>
-        </div>
-      )}
-
-      {/* Users Tab */}
-      {tab === 'users' && (
-        <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-          {/* Users search */}
-          <div style={{ marginBottom: 12 }}>
-            <input 
-              type="text"
-              placeholder="Search users (name or email)"
-              value={localSearch}
-              onChange={e => setLocalSearch(e.target.value)}
-              style={{ width: '100%', padding: 6, border: '1px solid #ddd', borderRadius: 4 }}
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <button className="btn ghost sm" onClick={() => setSelectedUsers(new Set(users.map(u => u.id)))}>Select All</button>
-            <button className="btn ghost sm" onClick={() => setSelectedUsers(new Set())}>Clear</button>
-            <span className="small muted">Selected: {selectedUsers.size}</span>
-          </div>
-          {users.slice(0, usersPage * pageSize).map(user => (
-            <div
-              key={user.id}
-              onClick={() => toggleUser(user.id)}
-              role="button"
-              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
-            >
-              <input
-                type="checkbox"
-                checked={selectedUsers.has(user.id)}
-                onClick={e => e.stopPropagation()}
-                onChange={() => toggleUser(user.id)}
-              />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 500 }}>{user.displayName}</div>
-                <div className="small muted">{user.userPrincipalName}</div>
-                {user.department && <div className="small muted">{user.department} • {user.jobTitle}</div>}
-              </div>
-            </div>
-          ))}
-          {(usersPage * pageSize) < users.length && (
-            <div style={{ padding: 8, textAlign: 'center' }}>
-              <button className="btn ghost sm" onClick={() => setUsersPage(p => p + 1)}>Load more</button>
-              <div className="small muted" style={{ marginTop: 6 }}>{Math.min(usersPage * pageSize, users.length)} of {users.length}</div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Groups Tab */}
-      {tab === 'groups' && (
-        <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-          {/* Groups search (client-side filter) */}
-          <div style={{ marginBottom: 12 }}>
-            <input 
-              type="text"
-              placeholder="Search groups"
-              value={groupSearch}
-              onChange={e => { setGroupSearch(e.target.value); setGroupsPage(1); }}
-              style={{ width: '100%', padding: 6, border: '1px solid #ddd', borderRadius: 4 }}
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <button className="btn ghost sm" onClick={() => setSelectedGroups(new Set(groups.map(g => g.id)))}>Select All</button>
-            <button className="btn ghost sm" onClick={() => setSelectedGroups(new Set())}>Clear</button>
-            <span className="small muted">Selected: {selectedGroups.size}</span>
-          </div>
-          {groups
-            .filter(g => {
-              if (!groupSearch.trim()) return true;
-              const q = groupSearch.toLowerCase();
-              return (g.displayName || '').toLowerCase().includes(q) || (g.description || '').toLowerCase().includes(q) || (g.mail || '').toLowerCase().includes(q);
-            })
-            .slice(0, groupsPage * pageSize)
-            .map(group => (
-            <div key={group.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, borderBottom: '1px solid #f0f0f0' }}>
-              <input 
-                type="checkbox" 
-                checked={selectedGroups.has(group.id)} 
-                onChange={() => toggleGroup(group.id)} 
-              />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 500 }}>{group.displayName}</div>
-                {group.description && <div className="small muted">{group.description}</div>}
-                <div className="small muted">{group.memberCount || 0} members</div>
-              </div>
-            </div>
-          ))}
-          {(groupsPage * pageSize) < groups.length && (
-            <div style={{ padding: 8, textAlign: 'center' }}>
-              <button className="btn ghost sm" onClick={() => setGroupsPage(p => p + 1)}>Load more</button>
-              <div className="small muted" style={{ marginTop: 6 }}>{Math.min(groupsPage * pageSize, groups.length)} of {groups.length}</div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
-
-// Simple Document List Editor (SQLite-only)
-import { useAuth as useAuthCtx } from '../context/AuthContext';
-type SimpleDoc = { title: string; url: string; version?: number; requiresSignature?: boolean; driveId?: string; itemId?: string; source?: 'sharepoint' | 'url' | 'local'; localFileId?: number | null; localUrl?: string | null };
-const DocumentListEditor: React.FC<{ onChange: (docs: SimpleDoc[]) => void; initial?: SimpleDoc[] }>
-  = ({ onChange, initial = [] }) => {
-  const [docs, setDocs] = useState<SimpleDoc[]>(initial);
-  const [title, setTitle] = useState('');
-  const [url, setUrl] = useState('');
-
-  useEffect(() => { onChange(docs); }, [docs]);
-
-  const addDoc = () => {
-    const t = title.trim();
-    const u = url.trim();
-    if (!t || !u) return;
-    setDocs(prev => [{ title: t, url: u, version: 1, requiresSignature: false }, ...prev]);
-    setTitle(''); setUrl('');
-  };
-  const removeDoc = (idx: number) => setDocs(prev => prev.filter((_, i) => i !== idx));
-
-  return (
-    <div style={{ border: '1px solid #e0e0e0', borderRadius: 8, padding: 16 }}>
-      <h3 style={{ margin: '0 0 16px 0', fontSize: 16 }}>Documents</h3>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr auto', gap: 8, marginBottom: 12 }}>
-        <input placeholder="Title" value={title} onChange={e => setTitle(e.target.value)} style={{ padding: 8, border: '1px solid #ddd', borderRadius: 4 }} />
-        <input placeholder="URL (https://...)" value={url} onChange={e => setUrl(e.target.value)} style={{ padding: 8, border: '1px solid #ddd', borderRadius: 4 }} />
-        <button className="btn sm" onClick={addDoc}>Add</button>
-      </div>
-      {docs.length === 0 && <div className="small muted">No documents added yet.</div>}
-      {docs.length > 0 && (
-        <div style={{ display: 'grid', gap: 8, maxHeight: 300, overflowY: 'auto' }}>
-          {docs.map((d, idx) => (
-            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 3fr auto', gap: 8, alignItems: 'center' }}>
-              <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.title}</div>
-              <a href={d.url} target="_blank" rel="noopener noreferrer" className="small" style={{ color: '#0066cc', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.url}</a>
-              <button className="btn ghost sm" onClick={() => removeDoc(idx)}>Remove</button>
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="small muted" style={{ marginTop: 8 }}>Tip: you can host files anywhere reachable (SharePoint, public storage, etc.). We store only metadata in SQLite.</div>
-    </div>
-  );
-};
-
-// SharePoint Document Browser Component (restored)
-const SharePointBrowser: React.FC<{ onDocumentSelect: (docs: SharePointDocument[]) => void; canUpload?: boolean }> = ({ onDocumentSelect, canUpload = false }) => {
-  const { getToken, login, account } = useAuthCtx();
-  const [loading, setLoading] = useState(false);
-  const [sites, setSites] = useState<SharePointSite[]>([]);
-  const [selectedSite, setSelectedSite] = useState<string>('');
-  const [libraries, setLibraries] = useState<SharePointDocumentLibrary[]>([]);
-  const [selectedLibrary, setSelectedLibrary] = useState<string>('');
-  const [documents, setDocuments] = useState<SharePointDocument[]>([]);
-  const [selectedDocs, setSelectedDocs] = useState<Set<string>>(new Set());
-  const [searchQuery, setSearchQuery] = useState('');
-  const [spTab, setSpTab] = useState<'browse' | 'upload'>('browse');
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
-  const [uploadStatuses, setUploadStatuses] = useState<{ name: string; progress: number; error?: string }[]>([]);
-  const [folderItems, setFolderItems] = useState<any[]>([]);
-  const [selectedFolderId, setSelectedFolderId] = useState<string>('root');
-  const [breadcrumbs, setBreadcrumbs] = useState<Array<{ id: string; name: string }>>([{ id: 'root', name: 'Root' }]);
-  const [spError, setSpError] = useState<string | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [favoritesOnly, setFavoritesOnly] = useState(false);
-  const [typeFilter, setTypeFilter] = useState<string>('all');
-  const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB UX guard
-
-  // Favorites handling
-  const favKey = 'sp:favorites';
-  const [favorites, setFavorites] = useState<Set<string>>(() => {
-    try { const raw = localStorage.getItem(favKey); if (!raw) return new Set(); return new Set(JSON.parse(raw)); } catch { return new Set(); }
-  });
-  const persistFavs = (next: Set<string>) => { setFavorites(new Set(next)); try { localStorage.setItem(favKey, JSON.stringify(Array.from(next))); } catch {} };
-  const docKey = (d: SharePointDocument) => d.id || d.webUrl || (d as any).name || '';
-  const toggleFav = (d: SharePointDocument) => {
-    const k = docKey(d);
-    const next = new Set(favorites);
-    const isAdding = !next.has(k);
-    if (isAdding) next.add(k); else next.delete(k);
-    persistFavs(next);
-    // UX: Starring also toggles selection for the document
-    try {
-      if (d.id) {
-        setSelectedDocs(prev => {
-          const copy = new Set(prev);
-          if (isAdding) copy.add(d.id as string); else copy.delete(d.id as string);
-          return copy;
-        });
-      }
-    } catch {}
-  };
-  const fileIcon = (name?: string) => {
-    const n = (name || '').toLowerCase();
-    if (n.endsWith('.pdf')) return '📕';
-    if (n.endsWith('.doc') || n.endsWith('.docx')) return '📝';
-    if (n.endsWith('.xls') || n.endsWith('.xlsx')) return '📊';
-    if (n.endsWith('.ppt') || n.endsWith('.pptx')) return '📑';
-    if (n.endsWith('.txt')) return '📄';
-    if (n.endsWith('.html') || n.endsWith('.htm')) return '🌐';
-    return '📁';
-  };
-
-  const loadSites = async () => {
-    setLoading(true); setSpError(null);
-    try {
-      const token = await getToken(['Sites.Read.All', 'Files.Read.All']);
-      if (!token) throw new Error('No token available');
-      const sitesData = await getSharePointSites(token);
-      setSites(sitesData);
-    } catch (error) {
-      console.error('Failed to load SharePoint sites:', error);
-      setSpError('Failed to load SharePoint sites. Ensure you are signed in and have granted Sites.Read.All and Files.Read.All.');
-    } finally { setLoading(false); }
-  };
-
-  const loadLibraries = async (siteId: string) => {
-    setLoading(true); setSpError(null);
-    try {
-      const token = await getToken(['Sites.Read.All', 'Files.Read.All']);
-      if (!token) throw new Error('No token available');
-      const librariesData = await getDocumentLibraries(token, siteId);
-      setLibraries(librariesData);
-    } catch (error: any) {
-      console.error('Failed to load document libraries:', error);
-      const msg = typeof error?.message === 'string' ? error.message : '';
-      setSpError(`Failed to load document libraries.${msg ? ' ' + msg : ''}`);
-    } finally { setLoading(false); }
-  };
-
-  const loadDocuments = async (driveId: string, folderId: string = 'root') => {
-    setLoading(true); setSpError(null);
-    try {
-      const token = await getToken(['Sites.Read.All', 'Files.Read.All']);
-      if (!token) throw new Error('No token available');
-      const documentsData = await getDocuments(token, driveId, folderId, searchQuery);
-      setDocuments(documentsData);
-    } catch (error) {
-      console.error('Failed to load documents:', error);
-      setSpError('Failed to load documents.');
-    } finally { setLoading(false); }
-  };
-
-  useEffect(() => { loadSites(); }, []);
-  useEffect(() => { if (selectedSite) { loadLibraries(selectedSite); setSelectedLibrary(''); setDocuments([]); } }, [selectedSite]);
-  useEffect(() => {
-    if (selectedLibrary) {
-      loadDocuments(selectedLibrary, 'root');
-      (async () => {
-        try {
-          const token = await getToken(['Sites.Read.All', 'Files.Read.All']);
-          if (!token) throw new Error('No token available');
-          const items = await getFolderItems(token, selectedLibrary, 'root');
-          setFolderItems(items); setSelectedFolderId('root'); setBreadcrumbs([{ id: 'root', name: 'Root' }]);
-        } catch (e) { console.error('Failed to load folder items', e); }
-      })();
-    }
-  }, [selectedLibrary, searchQuery]);
-  useEffect(() => { if (!selectedLibrary) return; if (spTab !== 'browse') return; loadDocuments(selectedLibrary, selectedFolderId || 'root'); }, [selectedFolderId, spTab]);
-  useEffect(() => { const selected = Array.from(selectedDocs).map(id => documents.find(d => d.id === id)!).filter(Boolean); onDocumentSelect(selected); }, [selectedDocs, documents]);
-  // Enforce browse tab when uploads are not permitted
-  useEffect(() => { if (!canUpload && spTab === 'upload') setSpTab('browse'); }, [canUpload, spTab]);
-
-  const toggleDocument = (docId: string) => {
-    const next = new Set(selectedDocs);
-    if (next.has(docId)) next.delete(docId); else next.add(docId);
-    setSelectedDocs(next);
-  };
-
-  const navigateFolder = async (folderId: string, folderName: string) => {
-    try {
-      const token = await getToken(['Sites.Read.All', 'Files.Read.All']);
-      if (!token) throw new Error('No token available');
-      const items = await getFolderItems(token, selectedLibrary, folderId);
-      setFolderItems(items); setSelectedFolderId(folderId);
-      setBreadcrumbs(prev => { const idx = prev.findIndex(b => b.id === folderId); if (idx >= 0) return prev.slice(0, idx + 1); return [...prev, { id: folderId, name: folderName }]; });
-    } catch (e) { console.error('Failed to navigate folder', e); }
-  };
-
-  const handleUpload = async (files: FileList | File[] | null) => {
-    const arr: File[] = files ? Array.from(files as any) : [];
-    if (!arr.length || !selectedLibrary) return;
-    setUploading(true); setUploadProgress(0); setUploadStatuses([]);
-    try {
-      const token = await getToken(['Files.ReadWrite.All', 'Sites.Read.All']);
-      if (!token) throw new Error('No token available');
-      const uploadedDocs: SharePointDocument[] = [];
-      for (let i = 0; i < arr.length; i++) {
-        const f = arr[i]!;
-        if ((f as any).size > MAX_FILE_SIZE) { setUploadStatuses(prev => [...prev, { name: f.name, progress: 0, error: `File exceeds ${Math.round(MAX_FILE_SIZE/1024/1024)}MB limit` }]); continue; }
-        setUploadStatuses(prev => [...prev, { name: f.name, progress: 0 }]);
-        try {
-          const doc = await uploadFileToDrive(token, selectedLibrary, f, f.name, undefined, (p) => {
-            setUploadProgress(p);
-            setUploadStatuses(prev => { const copy = [...prev]; const idx = copy.findIndex(u => u.name === f.name); if (idx >= 0) copy[idx] = { ...copy[idx], progress: p }; return copy; });
-          }, selectedFolderId);
-          uploadedDocs.push(doc);
-          setDocuments(prev => [{ id: doc.id, name: doc.name, webUrl: doc.webUrl, size: (doc as any).size || f.size, createdDateTime: (doc as any).createdDateTime || new Date().toISOString(), lastModifiedDateTime: (doc as any).lastModifiedDateTime || new Date().toISOString(), file: (doc as any).file || { mimeType: (f as any).type || 'application/octet-stream' }, parentReference: (doc as any).parentReference } as SharePointDocument, ...prev]);
-          setSelectedDocs(prev => new Set(prev).add(doc.id));
-        } catch (err: any) {
-          const msg = typeof err?.message === 'string' ? err.message : 'Upload failed';
-          setUploadStatuses(prev => { const copy = [...prev]; const idx = copy.findIndex(u => u.name === f.name); if (idx >= 0) copy[idx] = { ...copy[idx], error: msg }; return copy; });
-        }
-      }
-  showToast(`Uploaded ${uploadedDocs.length} file(s)`, 'success');
-      setSpTab('browse');
-  } catch (e) { console.error('Upload failed', e); showToast('Upload failed', 'error'); }
-    finally { setUploading(false); setUploadProgress(null); }
-  };
-
-  const onDropFiles = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault(); e.stopPropagation(); setIsDragging(false);
-    const files = e.dataTransfer.files; if (files && files.length > 0) { void handleUpload(files); }
-  };
-
-  return (
-    <div style={{ border: '1px solid #e0e0e0', borderRadius: 8, padding: 16 }}>
-      <h3 style={{ margin: '0 0 16px 0', fontSize: 16 }}>SharePoint Documents</h3>
-      <div style={{ marginBottom: 12 }}>
-        {!account && (
-          <div className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#fff3cd', padding: 8, borderRadius: 6, border: '1px solid #ffeeba' }}>
-            <span>You're not signed in.</span>
-            <button className="btn sm" onClick={() => login().then(() => loadSites())}>Sign in</button>
-          </div>
-        )}
-        {spError && (
-          <div className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', background: '#f8d7da', padding: 8, borderRadius: 6, border: '1px solid #f5c6cb', marginTop: 8 }}>
-            <span style={{ flex: 1 }}>{spError}</span>
-            <button className="btn ghost sm" onClick={() => loadSites()}>Retry</button>
-          </div>
-        )}
-      </div>
-
-      {/* Tabs */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, borderBottom: '1px solid #e0e0e0' }}>
-        <button className={spTab === 'browse' ? 'btn sm' : 'btn ghost sm'} onClick={() => setSpTab('browse')}>Browse</button>
-        {canUpload && (
-          <button className={spTab === 'upload' ? 'btn sm' : 'btn ghost sm'} onClick={() => setSpTab('upload')}>Upload</button>
-        )}
-      </div>
-
-      {loading && <div className="small muted">Loading...</div>}
-
-      {/* Site Selection */}
-      <div style={{ marginBottom: 16 }}>
-        <label className="small">SharePoint Site:</label>
-        <select value={selectedSite} onChange={e => setSelectedSite(e.target.value)} style={{ width: '100%', padding: 8, border: '1px solid #ddd', borderRadius: 4, marginTop: 4 }}>
-          <option value="">Select a site...</option>
-          {sites.map(site => <option key={site.id} value={site.id}>{site.displayName}</option>)}
-        </select>
-      </div>
-
-      {/* Library Selection */}
-      {selectedSite && (
-        <div style={{ marginBottom: 16 }}>
-          <label className="small">Document Library:</label>
-          <select value={selectedLibrary} onChange={e => setSelectedLibrary(e.target.value)} style={{ width: '100%', padding: 8, border: '1px solid #ddd', borderRadius: 4, marginTop: 4 }}>
-            <option value="">Select a library...</option>
-            {libraries.map(lib => <option key={lib.id} value={lib.id}>{lib.displayName}</option>)}
-          </select>
-        </div>
-      )}
-
-      {/* Search (Browse Mode) */}
-      {selectedLibrary && spTab === 'browse' && (
-        <div style={{ marginBottom: 16 }}>
-          <input type="text" placeholder="Search documents..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} style={{ width: '100%', padding: 8, border: '1px solid #ddd', borderRadius: 4 }} />
-        </div>
-      )}
-
-      {/* Document List (Browse Mode) */}
-      {spTab === 'browse' && (
-        <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-          {selectedLibrary && (
-            <div className="small" style={{ marginBottom: 8 }}>
-              {breadcrumbs.map((b, i) => (
-                <span key={b.id}>
-                  {i > 0 && ' / '}
-                  <a href="#" onClick={(e) => { e.preventDefault(); navigateFolder(b.id, b.name); }}>{b.name}</a>
-                </span>
-              ))}
-            </div>
-          )}
-          {/* Filters & View options */}
-          <div className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <input type="checkbox" checked={favoritesOnly} onChange={e => setFavoritesOnly(e.target.checked)} />
-              Favorites only
-            </label>
-            <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}>
-              <option value="all">All types</option>
-              <option value="pdf">PDF</option>
-              <option value="word">Word</option>
-              <option value="excel">Excel</option>
-              <option value="ppt">PowerPoint</option>
-              <option value="text">Text/HTML</option>
-            </select>
-          </div>
-          {selectedLibrary && folderItems.filter(i => i.folder).map(f => (
-            <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderBottom: '1px solid #f5f5f5' }}>
-              <button className="btn ghost sm" onClick={() => navigateFolder(f.id, f.name)}>📁 {f.name}</button>
-              <span className="small muted">{f.folder?.childCount ?? 0} items</span>
-            </div>
-          ))}
-          {documents.length > 0 && (
-            <>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                <button className="btn ghost sm" onClick={() => setSelectedDocs(new Set(documents.map(d => d.id)))}>Select All</button>
-                <button className="btn ghost sm" onClick={() => setSelectedDocs(new Set())}>Clear</button>
-                <span className="small muted">Selected: {selectedDocs.size}</span>
-              </div>
-              {documents
-                .filter(d => !favoritesOnly || favorites.has(docKey(d)))
-                .filter(d => {
-                  const n = (d.name || '').toLowerCase();
-                  if (typeFilter === 'all') return true;
-                  if (typeFilter === 'pdf') return n.endsWith('.pdf');
-                  if (typeFilter === 'word') return n.endsWith('.doc') || n.endsWith('.docx');
-                  if (typeFilter === 'excel') return n.endsWith('.xls') || n.endsWith('.xlsx');
-                  if (typeFilter === 'ppt') return n.endsWith('.ppt') || n.endsWith('.pptx');
-                  if (typeFilter === 'text') return n.endsWith('.txt') || n.endsWith('.html') || n.endsWith('.htm');
-                  return true;
-                })
-                .map(doc => (
-                <div
-                  key={doc.id}
-                  onClick={() => toggleDocument(doc.id)}
-                  role="button"
-                  style={{ display: 'grid', gridTemplateColumns: 'auto auto 1fr auto', alignItems: 'center', gap: 8, padding: 8, borderBottom: '1px solid #f0f0f0', cursor: 'pointer' }}
-                >
-                  <button className="btn ghost sm" title={favorites.has(docKey(doc)) ? 'Unpin' : 'Pin'} onClick={(e) => { e.stopPropagation(); toggleFav(doc); }}>{favorites.has(docKey(doc)) ? '⭐' : '☆'}</button>
-                  <span aria-hidden>{fileIcon(doc.name)}</span>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.name}</div>
-                    <div className="small muted">{doc.size ? (doc.size / 1024).toFixed(1) + ' KB' : ''}{doc.lastModifiedDateTime ? ` • Modified ${new Date(doc.lastModifiedDateTime).toLocaleDateString()}` : ''}</div>
-                    <a href={doc.webUrl} target="_blank" rel="noopener noreferrer" className="small" style={{ color: '#0066cc' }} onClick={(e) => e.stopPropagation()}>View in SharePoint ↗</a>
-                  </div>
-                  <input type="checkbox" checked={selectedDocs.has(doc.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggleDocument(doc.id)} />
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-      )}
-
-      {/* Upload Mode */}
-      {canUpload && spTab === 'upload' && (
-        <div>
-          {!selectedLibrary && <div className="small muted" style={{ marginBottom: 8 }}>Select a site and library to enable uploads.</div>}
-          {selectedLibrary && (
-            <div style={{ marginBottom: 12 }}>
-              <label className="small">Target folder:</label>
-              <select value={selectedFolderId} onChange={e => setSelectedFolderId(e.target.value)} style={{ width: '100%', padding: 8, border: '1px solid #ddd', borderRadius: 4, marginTop: 4 }}>
-                <option value="root">/ (root)</option>
-                {folderItems.filter(i => i.folder).map(f => (<option key={f.id} value={f.id}>/ {f.name}</option>))}
-              </select>
-            </div>
-          )}
-          <div onDragEnter={e => { e.preventDefault(); e.stopPropagation(); if (selectedLibrary && !uploading) setIsDragging(true); }} onDragOver={e => { e.preventDefault(); e.stopPropagation(); }} onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setIsDragging(false); }} onDrop={onDropFiles}
-            style={{ border: '2px dashed ' + (isDragging ? 'var(--primary)' : '#ccc'), background: isDragging ? 'rgba(0,0,0,0.02)' : 'transparent', padding: 16, borderRadius: 8, textAlign: 'center', opacity: (!selectedLibrary || uploading) ? 0.6 : 1, pointerEvents: (!selectedLibrary || uploading) ? 'none' : 'auto' }}>
-            <div className="small" style={{ marginBottom: 8 }}>Drag and drop files here</div>
-            <div className="small muted">or</div>
-            <div style={{ marginTop: 8 }}>
-              <label className="btn ghost sm" style={{ cursor: (!selectedLibrary || uploading) ? 'not-allowed' : 'pointer' }}>
-                Browse files
-                <input type="file" multiple disabled={!selectedLibrary || uploading} accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.html" onChange={e => handleUpload(e.target.files)} style={{ display: 'none' }} />
-              </label>
-            </div>
-            <div className="small muted" style={{ marginTop: 8 }}>Allowed: PDF, Word, Excel, PowerPoint, Text, HTML</div>
-          </div>
-          {uploading && (
-            <div className="small" style={{ marginTop: 8 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>Uploading...</span>
-                <span>{uploadProgress ?? 0}%</span>
-              </div>
-              <div className="progressBar" aria-hidden="true" style={{ marginTop: 6 }}>
-                <i style={{ width: `${uploadProgress ?? 0}%` }} />
-              </div>
-            </div>
-          )}
-          {uploadStatuses.length > 0 && (
-            <div style={{ marginTop: 8 }}>
-              {uploadStatuses.map((u, idx) => (
-                <div key={idx} className="small" style={{ display: 'grid', gap: 4, marginBottom: 6 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.name}</span>
-                    {u.error ? (<span style={{ color: '#d33' }}>{u.error}</span>) : (<span>{u.progress}%</span>)}
-                  </div>
-                  {!u.error && (<div className="progressBar" aria-hidden="true"><i style={{ width: `${u.progress}%` }} /></div>)}
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="small muted" style={{ marginTop: 8 }}>Files are uploaded into the selected folder. Large files use a chunked upload session.</div>
-        </div>
-      )}
-    </div>
-  );
-};
+// SharePointBrowser extracted to ./admin/SharePointBrowser
+import SharePointBrowser from './admin/SharePointBrowser';
 
 // Server Library Picker (deduped, server-hosted files)
 const LocalLibraryPicker: React.FC<{ onAdd: (docs: SimpleDoc[]) => void }> = ({ onAdd }) => {

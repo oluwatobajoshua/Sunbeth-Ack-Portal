@@ -54,8 +54,8 @@ export async function alertWarning(title: string, text?: string, opts?: SweetAle
 export async function confirmDialog(
   title: string,
   text?: string,
-  confirmText: string = 'Confirm',
-  cancelText: string = 'Cancel',
+  confirmText = 'Confirm',
+  cancelText = 'Cancel',
   opts?: SweetAlertOptions
 ): Promise<boolean> {
   const res = await base.fire({
@@ -68,6 +68,31 @@ export async function confirmDialog(
     ...opts
   });
   return !!res.isConfirmed;
+}
+
+// A three-option dialog (confirm/deny/cancel). Useful when you need an extra action like "Preview".
+export async function tripleDialog(
+  title: string,
+  text: string | undefined,
+  confirmText: string,
+  cancelText: string,
+  denyText?: string,
+  opts?: SweetAlertOptions
+): Promise<'confirm' | 'deny' | 'cancel'> {
+  const res = await base.fire({
+    icon: 'info',
+    title,
+    html: text,
+    showCancelButton: true,
+    showDenyButton: !!denyText,
+    confirmButtonText: confirmText,
+    cancelButtonText: cancelText,
+    denyButtonText: denyText,
+    ...opts
+  });
+  if (res.isConfirmed) return 'confirm';
+  if (res.isDenied) return 'deny';
+  return 'cancel';
 }
 export function showToast(title: string, icon: SweetAlertIcon = 'success') {
   return toast.fire({ icon, title });
@@ -82,6 +107,7 @@ export default {
   info: alertInfo,
   warning: alertWarning,
   confirm: confirmDialog,
+  tripleDialog,
   toast: showToast,
   toastHtml: showToastHtml
 };

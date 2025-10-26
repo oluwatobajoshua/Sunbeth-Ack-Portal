@@ -107,3 +107,12 @@ export const createRole = async (email: string, role: 'Admin'|'Manager'): Promis
 export const deleteRole = async (id: number): Promise<void> => {
   await apiDelete(`/api/roles/${id}`);
 };
+
+// --- Settings: Legal Consent Document ---
+export type LegalConsentDoc = { fileId: number | null; url: string | null; name: string | null };
+export const getLegalConsentDoc = async (): Promise<LegalConsentDoc> => {
+  try { const j = await apiGet(`/api/settings/legal-consent`); return { fileId: j?.fileId ?? null, url: j?.url ?? null, name: j?.name ?? null }; } catch { return { fileId: null, url: null, name: null }; }
+};
+export const setLegalConsentDoc = async (fileId: number | null): Promise<LegalConsentDoc> => {
+  try { const j = await apiPut(`/api/settings/legal-consent`, { fileId }); return { fileId: j?.fileId ?? null, url: j?.url ?? null, name: j?.name ?? null }; } catch { return { fileId: null, url: null, name: null }; }
+};

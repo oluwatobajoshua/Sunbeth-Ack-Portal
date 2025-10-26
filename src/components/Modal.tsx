@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef } from 'react';
+import ReactDOM from 'react-dom';
 
 type ModalProps = {
   open: boolean;
@@ -9,6 +10,21 @@ type ModalProps = {
   maxWidth?: number | string;
 };
 
+const ensurePortalRoot = () => {
+  try {
+    let el = document.getElementById('sunbeth-modal-root');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'sunbeth-modal-root';
+      document.body.appendChild(el);
+    }
+    return el;
+  } catch {
+    return null;
+  }
+};
+
+// eslint-disable-next-line max-lines-per-function
 const Modal: React.FC<ModalProps> = ({ open, onClose, title, children, width = 640, maxWidth = '90%' }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isSmall = useMemo(() => (typeof window !== 'undefined' ? window.innerWidth < 768 : false), []);
@@ -49,9 +65,26 @@ const Modal: React.FC<ModalProps> = ({ open, onClose, title, children, width = 6
     return () => root.removeEventListener('keydown', handler as any);
   }, [open]);
 
+  // Prevent background scroll while modal is open
+  useEffect(() => {
+    if (!open) return;
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = originalOverflow; };
+  }, [open]);
+
   if (!open) return null;
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000 }} onClick={onClose}>
+  const portalRoot = ensurePortalRoot();
+  const overlay = (
+    <div
+      role="button"
+      aria-label="Close modal backdrop"
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000 }}
+      tabIndex={0}
+      onKeyDown={(e) => { if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClose(); } }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-static-element-interactions */}
       <div
         ref={containerRef}
         className="card"
@@ -64,7 +97,13 @@ const Modal: React.FC<ModalProps> = ({ open, onClose, title, children, width = 6
           padding: 16,
           borderRadius: 12
         }}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title || 'Modal'}
+        tabIndex={-1}
+        onMouseDown={e => e.stopPropagation()}
         onClick={e => e.stopPropagation()}
+        onKeyDown={e => e.stopPropagation()}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <h3 style={{ margin: 0 }}>{title || 'Modal'}</h3>
@@ -74,6 +113,8 @@ const Modal: React.FC<ModalProps> = ({ open, onClose, title, children, width = 6
       </div>
     </div>
   );
+
+  return portalRoot ? ReactDOM.createPortal(overlay, portalRoot) : overlay;
 };
 
 export default Modal;

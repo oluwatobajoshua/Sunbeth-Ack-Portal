@@ -16,7 +16,7 @@ function getUserPreferredMode(): 'light' | 'dark' {
   try {
     const pref = localStorage.getItem('sunbeth_theme');
     if (pref === 'light' || pref === 'dark') return pref;
-  } catch {}
+  } catch { /* ignore */ }
   try {
     return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   } catch { return 'light'; }
@@ -57,14 +57,23 @@ export const ThemeController: React.FC = () => {
           // user follows system
           run();
         }
-      } catch {}
+  } catch { /* ignore */ }
     };
-    if (mql && typeof mql.addEventListener === 'function') mql.addEventListener('change', handle);
+  if (mql && typeof mql.addEventListener === 'function') mql.addEventListener('change', handle);
+
+    // React immediately when user toggles theme via UI (custom event)
+    const onThemeChanged = () => run();
+  try { window.addEventListener('sunbeth:themeChanged', onThemeChanged as EventListener); } catch { /* ignore */ }
+    // Cross-tab support: if localStorage changes elsewhere
+  const onStorage = (e: StorageEvent) => { if (e.key === 'sunbeth_theme') run(); };
+  try { window.addEventListener('storage', onStorage); } catch { /* ignore */ }
 
     return () => {
       aborted = true;
       controller.abort();
       if (mql && typeof mql.removeEventListener === 'function') mql.removeEventListener('change', handle);
+      try { window.removeEventListener('sunbeth:themeChanged', onThemeChanged as EventListener); } catch { /* ignore */ }
+      try { window.removeEventListener('storage', onStorage); } catch { /* ignore */ }
     };
   }, [apiBase, loc.pathname, applyTheme]);
 

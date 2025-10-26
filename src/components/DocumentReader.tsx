@@ -16,6 +16,7 @@ import Toast from './Toast';
 import { getDocumentsByBatch, getUserProgress, getAcknowledgedDocIds, getDocumentById } from '../services/dbService';
 import type { Doc } from '../types/models';
 import { getApiBase as getApiBaseCfg } from '../utils/runtimeConfig';
+import { hasConsent, requestConsentIfNeeded } from '../utils/legalConsent';
 
 const DocumentReader: React.FC = () => {
   const { id } = useParams();
@@ -38,6 +39,13 @@ const DocumentReader: React.FC = () => {
 
   const onAccept = async () => {
     if (!ack) return;
+    // Ensure legal consent before allowing acknowledgement submission (gates deep links too)
+    try {
+      const ok = await requestConsentIfNeeded(account?.username || undefined, batchIdFromQuery || undefined);
+      if (!ok) return; // user denied; do nothing
+    } catch {
+      return; // safety: abort on unexpected error
+    }
     const payload = { 
       userDisplay: account?.name,
       userEmail: account?.username,
@@ -267,6 +275,12 @@ const DocumentReader: React.FC = () => {
           </div>
           <Link to="/"><button className="btn ghost sm">← Back</button></Link>
         </div>
+        {/* Show a gentle reminder if consent is missing (but don't block viewing) */}
+        {batchIdFromQuery && !hasConsent(account?.username || undefined, batchIdFromQuery) && (
+          <div className="small" style={{ marginTop: 8, background: '#fff8e1', border: '1px solid #ffe0b2', padding: 10, borderRadius: 8 }}>
+            To submit an acknowledgement in this batch, you must first consent to legal terms. You'll be prompted when you click I Accept.
+          </div>
+        )}
         <div className="viewer" style={{ marginTop: 12 }}>
           {needGraphAuth && (
             <div className="small" style={{ marginBottom: 8, background: '#fff8e1', border: '1px solid #ffe0b2', padding: 10, borderRadius: 8 }}>

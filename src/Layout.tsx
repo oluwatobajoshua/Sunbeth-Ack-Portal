@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import { useExternalAuth } from './context/ExternalAuthContext';
+import { useFeatureFlags } from './context/FeatureFlagsContext';
 import { useRBAC } from './context/RBACContext';
 import { useTenant } from './context/TenantContext';
 // import DevPanel from './components/DevPanel';
@@ -12,19 +13,29 @@ import DancingLogoOverlay from './components/DancingLogoOverlay';
 const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
   const { account, token, photo, login, logout } = useAuth();
   const { user: externalUser, isAuthenticated: isExternal, logout: externalLogout } = useExternalAuth();
+  const { externalSupport, loaded: flagsLoaded } = useFeatureFlags();
   const { tenant } = useTenant();
   const [theme, setTheme] = useState<'light'|'dark'>(() => {
-    try { return (localStorage.getItem('sunbeth_theme') as 'light'|'dark') || 'light'; } catch { return 'light'; }
+    try {
+      const ls = localStorage.getItem('sunbeth_theme');
+      if (ls === 'light' || ls === 'dark') return ls;
+    } catch { /* ignore */ }
+    try {
+      const attr = document.documentElement.getAttribute('data-theme');
+      if (attr === 'light' || attr === 'dark') return attr;
+    } catch { /* ignore */ }
+    try { return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; } catch { return 'light'; }
   });
   const [stickyHeader, setStickyHeader] = useState<boolean>(() => {
     try { return (localStorage.getItem('sunbeth_sticky_header') || 'true') === 'true'; } catch { return true; }
   });
   useEffect(() => {
-    try { localStorage.setItem('sunbeth_theme', theme); } catch {}
-    try { document.documentElement.setAttribute('data-theme', theme); } catch {}
+    // Persist the chosen theme, but avoid forcing the DOM attribute here to prevent
+    // racing against ThemeController/TenantProvider initial application.
+    try { localStorage.setItem('sunbeth_theme', theme); } catch { /* ignore */ }
   }, [theme]);
   useEffect(() => {
-    try { localStorage.setItem('sunbeth_sticky_header', stickyHeader ? 'true' : 'false'); } catch {}
+    try { localStorage.setItem('sunbeth_sticky_header', stickyHeader ? 'true' : 'false'); } catch { /* ignore */ }
   }, [stickyHeader]);
   const navigate = useNavigate();
   const location = useLocation();
@@ -71,7 +82,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
             const remain = Math.max(0, total - acked);
             pendingTotal += remain;
             if ((p.percent ?? 0) < 100) incompletes.push({ due: b.toba_duedate });
-          } catch {}
+          } catch { /* ignore */ }
         }
         
         setPending(pendingTotal);
@@ -97,6 +108,14 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
     };
   }, [account, token, isExternal, externalUser?.email]);
   const rbac = useRBAC();
+
+  // If External Support is disabled while an external user is signed in, log them out and route to landing
+  useEffect(() => {
+    if (flagsLoaded && !externalSupport && isExternal) {
+      try { externalLogout(); } catch { /* ignore */ }
+      try { navigate('/', { replace: true }); } catch { /* ignore */ }
+    }
+  }, [flagsLoaded, externalSupport, isExternal, externalLogout, navigate]);
   // Redirect rules around auth transitions for cleaner UX
   useEffect(() => {
     const was = prevAccount.current;
@@ -147,7 +166,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
                 <span>⚡ Super Admin</span>
               </div>
             )}
-            <button className="btn ghost sm" aria-label="Toggle theme" onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}>{theme === 'light' ? 'Dark' : 'Light'} Mode</button>
+            <button className="btn ghost sm" aria-label="Toggle theme" onClick={() => { const next = theme === 'light' ? 'dark' : 'light'; setTheme(next); try { document.documentElement.setAttribute('data-theme', next); window.dispatchEvent(new CustomEvent('sunbeth:themeChanged')); } catch { /* ignore */ } }}>{theme === 'light' ? 'Dark' : 'Light'} Mode</button>
             <button className="btn ghost sm" aria-label="Toggle sticky header" onClick={() => setStickyHeader(s => !s)}>{stickyHeader ? 'Unpin Header' : 'Pin Header'}</button>
 
             <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '6px 8px', background: 'rgba(255,255,255,0.04)', borderRadius: 6 }}>
@@ -163,7 +182,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
           </div>
         ) : isExternal ? (
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 12, alignItems: 'center' }}>
-            <button className="btn ghost sm" aria-label="Toggle theme" onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}>{theme === 'light' ? 'Dark' : 'Light'} Mode</button>
+            <button className="btn ghost sm" aria-label="Toggle theme" onClick={() => { const next = theme === 'light' ? 'dark' : 'light'; setTheme(next); try { document.documentElement.setAttribute('data-theme', next); window.dispatchEvent(new CustomEvent('sunbeth:themeChanged')); } catch { /* ignore */ } }}>{theme === 'light' ? 'Dark' : 'Light'} Mode</button>
             <button className="btn ghost sm" aria-label="Toggle sticky header" onClick={() => setStickyHeader(s => !s)}>{stickyHeader ? 'Unpin Header' : 'Pin Header'}</button>
 
             <div style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '6px 8px', background: 'rgba(255,255,255,0.04)', borderRadius: 6 }}>
@@ -180,7 +199,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
         ) : (
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 12, alignItems: 'center' }}>
             <a href="/about" className="small" style={{ color: '#fff', textDecoration: 'none', opacity: .95 }}>About</a>
-            <button className="btn ghost sm" aria-label="Toggle theme" onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}>{theme === 'light' ? 'Dark' : 'Light'} Mode</button>
+            <button className="btn ghost sm" aria-label="Toggle theme" onClick={() => { const next = theme === 'light' ? 'dark' : 'light'; setTheme(next); try { document.documentElement.setAttribute('data-theme', next); window.dispatchEvent(new CustomEvent('sunbeth:themeChanged')); } catch { /* ignore */ } }}>{theme === 'light' ? 'Dark' : 'Light'} Mode</button>
             <button className="btn ghost sm" aria-label="Toggle sticky header" onClick={() => setStickyHeader(s => !s)}>{stickyHeader ? 'Unpin Header' : 'Pin Header'}</button>
             <button className="btn sm" onClick={() => login()}>Sign in</button>
           </div>

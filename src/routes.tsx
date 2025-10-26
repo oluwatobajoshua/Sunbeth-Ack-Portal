@@ -14,9 +14,9 @@ import { useAuth } from './context/AuthContext';
 import { useExternalAuth } from './context/ExternalAuthContext';
 import { useFeatureFlags } from './context/FeatureFlagsContext';
 
-import LoginGateway from './components/LoginGateway.tsx';
-import ExternalLogin from './components/ExternalLogin.tsx';
-import Logout from './components/Logout.tsx';
+import LoginGateway from './components/LoginGateway';
+import ExternalLogin from './components/ExternalLogin';
+import Logout from './components/Logout';
 import ModulesHub from './components/ModulesHub';
 const SuperAdminConsole = React.lazy(() => import('./components/SuperAdminConsole'));
 

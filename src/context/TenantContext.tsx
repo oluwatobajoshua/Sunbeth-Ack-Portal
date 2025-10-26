@@ -29,25 +29,38 @@ type TenantContextType = {
   applyTheme: (theme: ThemeConfig | null | undefined) => void;
 };
 
+// eslint-disable-next-line @typescript-eslint/no-empty-function
 const TenantContext = createContext<TenantContextType>({ tenant: null, loading: true, error: null, applyTheme: () => {} });
 
 function setCssVar(name: string, value: string) {
   try { document.documentElement.style.setProperty(name, value); } catch { /* no-op in SSR */ }
 }
 
+// eslint-disable-next-line complexity
 function applyThemeToDom(theme?: ThemeConfig | null) {
   if (!theme) return;
-  if (theme.cssVars) {
-    Object.entries(theme.cssVars).forEach(([k, v]) => setCssVar(k, String(v)));
+  // Feature flag: by default, preserve the original DocAck styling tokens from sunbeth.css
+  // and only toggle the data-theme attribute. To allow server-provided CSS var overrides,
+  // set REACT_APP_ENABLE_SERVER_THEME=true in the environment.
+  const enableServerTheme = (() => {
+    try { return ((process.env.REACT_APP_ENABLE_SERVER_THEME || '').toLowerCase() === 'true'); } catch { return false; }
+  })();
+
+  if (enableServerTheme) {
+    if (theme.cssVars) {
+      Object.entries(theme.cssVars).forEach(([k, v]) => setCssVar(k, String(v)));
+    }
+    if (theme.colors) {
+      if (theme.colors.primary) setCssVar('--primary', theme.colors.primary);
+      if (theme.colors.accent) setCssVar('--accent', theme.colors.accent);
+      if (theme.colors.bg) setCssVar('--bg', theme.colors.bg);
+      if (theme.colors.bgElevated) setCssVar('--bg-elevated', theme.colors.bgElevated);
+      if (theme.colors.card) setCssVar('--card', theme.colors.card);
+      if (theme.colors.muted) setCssVar('--muted', theme.colors.muted);
+    }
   }
-  if (theme.colors) {
-    if (theme.colors.primary) setCssVar('--primary', theme.colors.primary);
-    if (theme.colors.accent) setCssVar('--accent', theme.colors.accent);
-    if (theme.colors.bg) setCssVar('--bg', theme.colors.bg);
-    if (theme.colors.bgElevated) setCssVar('--bg-elevated', theme.colors.bgElevated);
-    if (theme.colors.card) setCssVar('--card', theme.colors.card);
-    if (theme.colors.muted) setCssVar('--muted', theme.colors.muted);
-  }
+
+  // Always honor the light/dark variant selection via the DOM attribute
   try {
     const mode = theme.darkMode ? 'dark' : 'light';
     document.documentElement.setAttribute('data-theme', mode);
@@ -62,7 +75,8 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   useEffect(() => {
     let mounted = true;
-    (async () => {
+  // eslint-disable-next-line complexity
+  (async () => {
       setLoading(true);
       setError(null);
       try {
@@ -74,7 +88,7 @@ export const TenantProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             const tj = await te.json();
             // choose variant based on user preference or system
             const pref = (() => {
-              try { const p = localStorage.getItem('sunbeth_theme'); if (p === 'light' || p === 'dark') return p; } catch {}
+              try { const p = localStorage.getItem('sunbeth_theme'); if (p === 'light' || p === 'dark') return p; } catch { /* ignore */ }
               try { return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; } catch { return 'light'; }
             })() as 'light'|'dark';
             initialTheme = (tj?.theme?.[pref] || tj?.theme?.light || null) as ThemeConfig | null;

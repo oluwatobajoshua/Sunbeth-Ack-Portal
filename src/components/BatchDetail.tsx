@@ -5,10 +5,11 @@
  * No artificial fallbacks; empty/error state is shown if the call fails.
  */
 import React, { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { getDocumentsByBatch, getAcknowledgedDocIds } from '../services/dbService';
+import { getDocumentsByBatch, getAcknowledgedDocIds, getUserProgress } from '../services/dbService';
 import type { Doc } from '../types/models';
+import { requestConsentIfNeeded } from '../utils/legalConsent';
 
 const BatchDetail: React.FC = () => {
   const { id } = useParams();
@@ -17,9 +18,47 @@ const BatchDetail: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [ackIds, setAckIds] = useState<string[]>([]);
+  const [consentReady, setConsentReady] = useState<boolean>(false);
+  const navigate = useNavigate();
+
+  // Gate entry with legal consent (skip if batch is already completed)
+  useEffect(() => {
+    (async () => {
+      if (!id) { setConsentReady(true); return; }
+      try {
+        // If completed, skip consent requirement
+        const p = await getUserProgress(id, token ?? undefined, undefined, account?.username || undefined);
+        if (p?.percent >= 100) { setConsentReady(true); return; }
+      } catch { /* ignore and continue to consent */ }
+
+      try {
+        const ok = await requestConsentIfNeeded(account?.username || undefined, id);
+        if (!ok) {
+          navigate('/');
+          return;
+        }
+        setConsentReady(true);
+        // Auto-advance to the first document after consent
+        try {
+          const list = await getDocumentsByBatch(id, token ?? undefined);
+          if (Array.isArray(list) && list.length > 0) {
+            const first = list[0];
+            if (first && first.toba_documentid) {
+              navigate(`/document/${first.toba_documentid}?batchId=${id}`);
+              return;
+            }
+          }
+        } catch {}
+      } catch {
+        // If consent flow fails unexpectedly, be safe and return to dashboard
+        navigate('/');
+      }
+    })();
+  }, [id, token, account?.username, navigate]);
 
   useEffect(() => {
     if (!id) return;
+    if (!consentReady) return;
     const run = async () => {
       try {
         setLoading(true);
@@ -35,7 +74,7 @@ const BatchDetail: React.FC = () => {
       } finally { setLoading(false); }
     };
     run();
-  }, [token, id, account?.username]);
+  }, [token, id, account?.username, consentReady]);
 
   return (
     <div className="container">
