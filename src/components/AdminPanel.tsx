@@ -855,6 +855,31 @@ const AdminPanel: React.FC = () => {
                 <button className="btn ghost sm" onClick={pingApi} style={{ marginLeft: 6 }}>Refresh</button>
               </div>
             )}
+            {sqliteEnabled && (
+              (() => {
+                try {
+                  const base = (getApiBase() as string) || '';
+                  if (!base) return null;
+                  const host = new URL(base).host;
+                  return (
+                    <div className="small" title={`Backend API: ${base}`} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', border: '1px solid #eee', borderRadius: 999 }}>
+                      <span className="muted">Backend:</span>
+                      <a href={`${base}/api/health`} target="_blank" rel="noreferrer" className="small" title="Open /api/health">
+                        {host}
+                      </a>
+                      <button
+                        className="btn ghost xs"
+                        onClick={async () => {
+                          try { await navigator.clipboard.writeText(base); showToast('API base copied', 'success'); }
+                          catch { showToast('Copy failed', 'error'); }
+                        }}
+                        title="Copy API base URL"
+                      >Copy</button>
+                    </div>
+                  );
+                } catch { return null; }
+              })()
+            )}
             {(isSuperAdmin || perms?.exportAnalytics) && (
               <button className="btn ghost sm" onClick={async () => {
                 try {

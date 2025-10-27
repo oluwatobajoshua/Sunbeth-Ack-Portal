@@ -43,7 +43,10 @@ export const getAdminEmails = (): string[] => {
 
 // Manager notification recipients (comma-separated emails)
 export const getManagerEmails = (): string[] => {
-  const raw = (process.env.REACT_APP_MANAGER_EMAILS || '').trim();
+  // Prefer REACT_APP_MANAGER_EMAILS; fallback to legacy REACT_APP_MANAGERS
+  const primary = (process.env.REACT_APP_MANAGER_EMAILS || '').trim();
+  const legacy = (!primary ? (process.env.REACT_APP_MANAGERS || '').trim() : '');
+  const raw = primary || legacy;
   if (!raw) return [];
   return raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 };
