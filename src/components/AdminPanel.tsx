@@ -57,7 +57,8 @@ const AdminPanel: React.FC = () => {
   const pingApi = async () => {
     try {
       if (!sqliteEnabled) { setApiHealth('unknown'); return; }
-      const base = (process.env.REACT_APP_API_BASE as string).replace(/\/$/, '');
+      const base = (getApiBase() as string) || '';
+      if (!base) { setApiHealth('unknown'); return; }
       const res = await fetch(`${base}/api/health`, { cache: 'no-store' });
       setApiHealth(res.ok ? 'ok' : 'down');
     } catch { setApiHealth('down'); }
