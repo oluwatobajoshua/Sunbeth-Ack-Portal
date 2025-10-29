@@ -24,7 +24,7 @@ export const getBrandLogoUrl = (): string | undefined => (
 );
 
 export const getBrandPrimaryColor = (): string => (
-  process.env.REACT_APP_BRAND_COLOR || '#5a189a'
+  process.env.REACT_APP_BRAND_COLOR || '#0a3d33'
 );
 
 // HR notification recipients (comma-separated emails)
