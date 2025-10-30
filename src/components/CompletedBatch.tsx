@@ -13,7 +13,7 @@ const CompletedBatch: React.FC = () => {
   useEffect(() => {
     if (!id) return;
     (async () => {
-      const list = await getDocumentsByBatch(id, token ?? undefined);
+  const list = await getDocumentsByBatch(id);
       setDocs(list);
       const a = await getAcknowledgedDocIds(id, token ?? undefined, account?.username || undefined);
       setAckIds(a);

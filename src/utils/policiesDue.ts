@@ -56,7 +56,8 @@ export async function enforceDuePolicies(email: string): Promise<boolean> {
   const base = getApiBase() || '';
 
   for (const p of due) {
-    const url = `${base}/api/files/${p.fileId}`;
+    const hasFile = Number.isFinite(p.fileId as any) && (p.fileId as any) > 0;
+    const url = hasFile ? `${base}/api/files/${p.fileId}` : '';
     const html = `
       <div style="text-align:left">
         <div style="font-weight:600">${p.name}</div>
@@ -67,12 +68,9 @@ export async function enforceDuePolicies(email: string): Promise<boolean> {
     `;
     // offer preview loop
     for (;;) {
-      const r = await tripleDialog('Policy acknowledgement required', html, 'Acknowledge', 'Later', 'Preview PDF', { icon: p.overdue ? 'warning' : 'info' });
+  const r = await tripleDialog('Policy acknowledgement required', html, 'Acknowledge', 'Later', 'Preview PDF', { icon: p.overdue ? 'warning' : 'info' });
       if (r === 'deny') break; // Later — stop enforcing for now
-      if (r === 'cancel') {
-        await showPdfPreview({ title: p.name, url });
-        continue;
-      }
+      if (r === 'cancel' && hasFile) { await showPdfPreview({ title: p.name, url }); continue; }
       // Confirm acknowledge
       const ok = await confirmDialog('Confirm acknowledgement', 'I have read and understand this policy.', 'Confirm', 'Back', { icon: 'question' });
       if (!ok) continue;
@@ -82,7 +80,8 @@ export async function enforceDuePolicies(email: string): Promise<boolean> {
         // User denied consent; cannot proceed
         break;
       }
-      let saved = await acknowledgePolicy(email, p.fileId);
+  if (!hasFile) break;
+  let saved = await acknowledgePolicy(email, p.fileId);
       if (!saved) {
         // Try to recover if backend enforced consent after our check
         const consented2 = await requestConsentIfNeeded(email, 'policy');

@@ -51,7 +51,9 @@
     "serve": "^14.2.1"
   },
   "scripts": {
-    "start": "react-scripts start",
+    "prestart": "powershell -NoProfile -ExecutionPolicy Bypass -File ..\\scripts\\manage-backend.ps1 -Action Start",
+    "start": "cross-env REACT_APP_ENABLE_SQLITE=true REACT_APP_API_BASE=http://127.0.0.1:4000 react-scripts start",
+    "start:plain": "react-scripts start",
   "build": "cross-env GENERATE_SOURCEMAP=false DISABLE_ESLINT_PLUGIN=true react-scripts build",
     "test": "react-scripts test",
     "check:prepush": "npm run lint && npm test --silent -- --watchAll=false && npm run build",

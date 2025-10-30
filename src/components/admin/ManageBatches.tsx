@@ -44,11 +44,20 @@ const ManageBatches: React.FC<{ canEdit: boolean; onEdit: (id: string) => void; 
 
   const openRecipients = async (id: string) => {
     try {
+      // Prefer batch-scoped endpoint; fallback to global list filter
+      const scoped = await fetch(`${apiBase()}/api/batches/${encodeURIComponent(id)}/recipients`);
+      if (scoped.ok) {
+        const rows = await scoped.json();
+        setRecOpen({ open: true, forBatch: id, rows: Array.isArray(rows) ? rows : [] });
+        return;
+      }
       const res = await fetch(`${apiBase()}/api/recipients`);
       const j = await res.json();
       const rows = (Array.isArray(j) ? j : []).filter((r: any) => String(r.batchId) === String(id));
       setRecOpen({ open: true, forBatch: id, rows });
-    } catch { setRecOpen({ open: true, forBatch: id, rows: [] }); }
+    } catch {
+      setRecOpen({ open: true, forBatch: id, rows: [] });
+    }
   };
 
   const save = async (id: string) => {

@@ -60,7 +60,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
         // Use current token from context
         let list: any[] = [];
         try { 
-          const email: string | undefined = account?.username || externalUser?.email || undefined;
+          const email: string | undefined = (account?.username || externalUser?.email || undefined)?.toLowerCase();
           list = await getBatches(token || undefined, email); 
         } catch { 
           list = []; 
@@ -77,7 +77,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
         
         for (const b of list) {
           try {
-            const email: string | undefined = account?.username || externalUser?.email || undefined;
+            const email: string | undefined = (account?.username || externalUser?.email || undefined)?.toLowerCase();
             const p = await getUserProgress(b.toba_batchid, token || undefined, undefined, email);
             const total = p.total ?? 0; 
             const acked = p.acknowledged ?? 0;
@@ -112,7 +112,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
   // Proactively prompt for due policies on login
   useEffect(() => {
-    const email = account?.username || externalUser?.email;
+  const email = (account?.username || externalUser?.email || undefined)?.toLowerCase();
     if (!email || duePoliciesChecked.current) return;
     duePoliciesChecked.current = true;
     (async () => {

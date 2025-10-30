@@ -20,7 +20,10 @@ export function useDocUrlResolution(
         const source = (currentDoc as any)?.toba_source || (currentDoc as any)?.source;
         setNeedGraphAuth(false);
         const url0 = (currentDoc as any)?.toba_fileurl || (currentDoc as any)?.url || '';
-        const isLocalFile = typeof url0 === 'string' && ((apiBase && url0.startsWith(apiBase + '/api/files/')) || url0.startsWith('/api/files/'));
+        // Treat placeholders like /api/files/undefined as invalid
+        const looksLocal = typeof url0 === 'string' && ((apiBase && url0.startsWith(apiBase + '/api/files/')) || url0.startsWith('/api/files/'));
+  const validLocal = looksLocal && (/\/api\/files\/[0-9]+(?:[/?#]|$)/).test(String(url0).replace(String(apiBase||''), ''));
+        const isLocalFile = !!validLocal;
         if (isLocalFile) {
           setDocUrl(url0);
           const orig = (currentDoc as any)?.toba_originalurl || (currentDoc as any)?.url || '';

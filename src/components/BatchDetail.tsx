@@ -40,7 +40,7 @@ const BatchDetail: React.FC = () => {
         setConsentReady(true);
         // Auto-advance to the first document after consent
         try {
-          const list = await getDocumentsByBatch(id, token ?? undefined);
+          const list = await getDocumentsByBatch(id);
           if (Array.isArray(list) && list.length > 0) {
             const first = list[0];
             if (first && first.toba_documentid) {
@@ -62,7 +62,7 @@ const BatchDetail: React.FC = () => {
     const run = async () => {
       try {
         setLoading(true);
-        const list = await getDocumentsByBatch(id, token ?? undefined);
+  const list = await getDocumentsByBatch(id);
         setDocs(list);
         setError(null);
         // fetch acknowledged doc ids for current user

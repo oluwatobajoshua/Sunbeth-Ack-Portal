@@ -106,6 +106,21 @@ const DataTable: React.FC<{ data: any[]; columns: Array<{ key: string; label: st
   </div>
 );
 
+// Helpers for safe formatting and pagination
+const safeNum = (v: any) => {
+  const n = Number(v);
+  return isFinite(n) ? n : 0;
+};
+
+function paginate<T>(arr: T[], page: number, pageSize: number) {
+  const total = Array.isArray(arr) ? arr.length : 0;
+  const totalPages = Math.max(1, Math.ceil((total || 1) / pageSize));
+  const p = Math.min(Math.max(1, page), totalPages);
+  const start = (p - 1) * pageSize;
+  const items = (Array.isArray(arr) ? arr : []).slice(start, start + pageSize);
+  return { items, page: p, totalPages, total };
+}
+
 // Helper: format relative time like "2 min ago"
 function formatRelative(ts?: string) {
   if (!ts) return '';
@@ -229,13 +244,37 @@ const AnalyticsDashboard: React.FC = () => {
   const [activities, setActivities] = useState<any[]>([]);
   const sqliteEnabled = (process.env.REACT_APP_ENABLE_SQLITE === 'true') && !!process.env.REACT_APP_API_BASE;
   const apiBase = sqliteEnabled ? (process.env.REACT_APP_API_BASE as string).replace(/\/$/, '') : '';
+  const getApiBases = () => {
+    const envBase = (process.env.REACT_APP_API_BASE || '').replace(/\/$/, '');
+    // @ts-ignore window dynamic hints from runtime or index.html
+    const hinted = (typeof window !== 'undefined' && ((window as any).__API_BASE__ || (window as any).API_BASE)) ? String((window as any).__API_BASE__ || (window as any).API_BASE).replace(/\/$/, '') : '';
+    const local = 'http://127.0.0.1:4000';
+    return Array.from(new Set([envBase, hinted, local].filter(Boolean)));
+  };
+  const tryFetchJson = async (path: string) => {
+    const bases = getApiBases();
+    let lastErr: any = null;
+    for (const b of bases) {
+      try {
+        const r = await fetch(`${b}${path}`);
+        if (r.ok) return await r.json();
+      } catch (e) { lastErr = e; }
+    }
+    if (lastErr) throw lastErr;
+    throw new Error('All API base candidates failed: ' + bases.join(', '));
+  };
+  // Simple search & pagination states
+  const [compSearch, setCompSearch] = useState('');
+  const [compPage, setCompPage] = useState(1);
+  const compPageSize = 10;
+  const [docSearch, setDocSearch] = useState('');
+  const [docPage, setDocPage] = useState(1);
+  const docPageSize = 10;
 
   const loadAnalyticsData = async () => {
     setLoading(true);
     try {
-      // SQLite analytics only
-      if (sqliteEnabled) {
-        try {
+      try {
           // Build filter query
           const q: string[] = [];
           const bf = (filters as any).businessId; if (bf && bf !== 'all') q.push(`businessId=${encodeURIComponent(bf)}`);
@@ -243,13 +282,13 @@ const AnalyticsDashboard: React.FC = () => {
           const gf = (filters as any).group; if (gf && gf !== 'all') q.push(`primaryGroup=${encodeURIComponent(gf)}`);
           const qs = q.length ? `?${q.join('&')}` : '';
           const [statsRes, recRes, bizRes, compRes, docRes, trendRes, actRes] = await Promise.all([
-            fetch(`${apiBase}/api/stats${qs}`).then(r => r.json()),
-            fetch(`${apiBase}/api/recipients${qs}`).then(r => r.json()),
+            tryFetchJson(`/api/stats${qs}`),
+            tryFetchJson(`/api/recipients${qs}`),
             getBusinesses().catch(() => []),
-            fetch(`${apiBase}/api/compliance${qs}`).then(r => r.json()).catch(() => []),
-            fetch(`${apiBase}/api/doc-stats${qs}`).then(r => r.json()).catch(() => []),
-            fetch(`${apiBase}/api/trends${qs}`).then(r => r.json()).catch(() => ({ completions: [], newBatches: [], activeUsers: [] })),
-            fetch(`${apiBase}/api/activity/recent?limit=20`).then(r => r.json()).catch(() => [])
+            tryFetchJson(`/api/compliance${qs}`).catch(() => []),
+            tryFetchJson(`/api/doc-stats${qs}`).catch(() => []),
+            tryFetchJson(`/api/trends${qs}`).catch(() => ({ completions: [], newBatches: [], activeUsers: [] })),
+            tryFetchJson(`/api/activity/recent?limit=20`).catch(() => [])
           ]);
           setRecipients(Array.isArray(recRes) ? recRes : []);
           setActivities(Array.isArray(actRes) ? actRes : []);
@@ -265,6 +304,19 @@ const AnalyticsDashboard: React.FC = () => {
             : [];
           setLiveOptions({ businesses, departments: Array.from(deptSet).sort(), groups: Array.from(groupSet).sort() });
 
+          // Normalize document stats to expected shape
+          const docs: DocumentStats[] = Array.isArray(docRes)
+            ? (docRes as any[]).map((d: any) => {
+                const totalAssigned = Number(d.totalAssigned || 0);
+                const acknowledged = Number((d.acknowledged ?? d.completed) || 0);
+                const pending = Math.max(0, totalAssigned - acknowledged);
+                const avgTimeToComplete = Number(d.avgTimeToComplete ?? d.avgDays ?? 0);
+                const documentName = String(d.documentName || d.title || d.toba_title || d.documentId || 'Document');
+                const batchName = String(d.batchName || d.toba_batchname || '—');
+                return { documentName, batchName, totalAssigned, acknowledged, pending, avgTimeToComplete };
+              })
+            : [];
+
           const live = {
             kpis: { ...statsRes, lastUpdated: new Date().toISOString() },
             compliance: Array.isArray(compRes) ? compRes : [],
@@ -274,30 +326,21 @@ const AnalyticsDashboard: React.FC = () => {
               newBatches: Number(((trendRes as any).newBatches?.[idx]?.count) || 0),
               activeUsers: Number(((trendRes as any).activeUsers?.[idx]?.count) || 0)
             })) : [],
-            documents: Array.isArray(docRes) ? docRes : []
+            documents: docs
           };
           setData(live);
           try { (window as any).__analyticsData = { ...live, __recipients: Array.isArray(recRes) ? recRes : [] }; } catch {}
           setLoading(false);
           return;
-        } catch (e) {
-          setData({
-            kpis: { totalBatches: 0, activeBatches: 0, totalUsers: 0, completionRate: 0, overdueBatches: 0, avgCompletionTime: 0, lastUpdated: new Date().toISOString() },
-            compliance: [], trends: [], documents: []
-          });
-          setLoading(false);
-          return;
-        }
+      } catch (e) {
+        setData({
+          kpis: { totalBatches: 0, activeBatches: 0, totalUsers: 0, completionRate: 0, overdueBatches: 0, avgCompletionTime: 0, lastUpdated: new Date().toISOString() },
+          compliance: [], trends: [], documents: []
+        });
+        try { (window as any).__analyticsData = null; } catch {}
+        setLoading(false);
+        return;
       }
-      // SQLite not enabled: show empty state
-      setData({
-        kpis: { totalBatches: 0, activeBatches: 0, totalUsers: 0, completionRate: 0, overdueBatches: 0, avgCompletionTime: 0, lastUpdated: new Date().toISOString() },
-        compliance: [],
-        trends: [],
-        documents: []
-      });
-      try { (window as any).__analyticsData = null; } catch {}
-      setLoading(false);
     } catch (error) {
       console.error('Failed to load analytics data:', error);
       setLoading(false);
@@ -388,31 +431,54 @@ const AnalyticsDashboard: React.FC = () => {
       {/* Department Compliance Table (live: currently empty until we derive from recipients/acks) */}
       <div className="card" style={{ padding: 20, marginBottom: 32 }}>
         <h3 style={{ margin: '0 0 16px 0', fontSize: 18 }}>🏢 Department Compliance Overview</h3>
+        {/* Search + pagination controls */}
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+          <input
+            type="search"
+            placeholder="Search department..."
+            value={compSearch}
+            onChange={(e) => { setCompSearch(e.target.value); setCompPage(1); }}
+            className="form-control"
+            style={{ maxWidth: 260 }}
+          />
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button className="btn ghost sm" disabled={compPage <= 1} onClick={() => setCompPage(p => Math.max(1, p - 1))}>◀ Prev</button>
+            <span className="small muted">Page {compPage}</span>
+            <button className="btn ghost sm" disabled={compPage * compPageSize >= (data.compliance || []).filter(c => !compSearch || String(c.department||'').toLowerCase().includes(compSearch.toLowerCase())).length} onClick={() => setCompPage(p => p + 1)}>Next ▶</button>
+          </div>
+        </div>
         {data.compliance.length === 0 ? (
           <div className="small muted">No live compliance breakdown yet.</div>
         ) : (
-          <DataTable 
-            data={data.compliance}
-            columns={[
-              { key: 'department', label: 'Department' },
-              { key: 'totalUsers', label: 'Total Users', format: (val) => val.toLocaleString() },
-              { key: 'completed', label: 'Completed', format: (val) => val.toLocaleString() },
-              { key: 'pending', label: 'Pending', format: (val) => val.toLocaleString() },
-              { key: 'overdue', label: 'Overdue', format: (val) => val.toLocaleString() },
-              { 
-                key: 'completionRate', 
-                label: 'Completion Rate', 
-                format: (val) => (
-                  <span style={{ 
-                    color: val >= 90 ? '#28a745' : val >= 75 ? '#ffc107' : '#dc3545',
-                    fontWeight: 'bold'
-                  }}>
-                    {val}%
-                  </span>
-                )
-              }
-            ]}
-          />
+          (() => {
+            const filtered = (data.compliance || [])
+              .filter(c => !compSearch || String(c.department||'').toLowerCase().includes(compSearch.toLowerCase()));
+            const { items } = paginate(filtered, compPage, compPageSize);
+            return (
+              <DataTable
+                data={items}
+                columns={[
+                  { key: 'department', label: 'Department' },
+                  { key: 'totalUsers', label: 'Total Users', format: (val) => safeNum(val).toLocaleString() },
+                  { key: 'completed', label: 'Completed', format: (val) => safeNum(val).toLocaleString() },
+                  { key: 'pending', label: 'Pending', format: (val) => safeNum(val).toLocaleString() },
+                  { key: 'overdue', label: 'Overdue', format: (val) => safeNum(val).toLocaleString() },
+                  { 
+                    key: 'completionRate', 
+                    label: 'Completion Rate', 
+                    format: (val) => (
+                      <span style={{ 
+                        color: safeNum(val) >= 90 ? '#28a745' : safeNum(val) >= 75 ? '#ffc107' : '#dc3545',
+                        fontWeight: 'bold'
+                      }}>
+                        {safeNum(val)}%
+                      </span>
+                    ) as any
+                  }
+                ]}
+              />
+            );
+          })()
         )}
       </div>
 
@@ -440,20 +506,43 @@ const AnalyticsDashboard: React.FC = () => {
       {/* Document Performance */}
       <div className="card" style={{ padding: 20, marginBottom: 32 }}>
         <h3 style={{ margin: '0 0 16px 0', fontSize: 18 }}>📄 Document Performance</h3>
+        {/* Search + pagination controls */}
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
+          <input
+            type="search"
+            placeholder="Search document or batch..."
+            value={docSearch}
+            onChange={(e) => { setDocSearch(e.target.value); setDocPage(1); }}
+            className="form-control"
+            style={{ maxWidth: 300 }}
+          />
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button className="btn ghost sm" disabled={docPage <= 1} onClick={() => setDocPage(p => Math.max(1, p - 1))}>◀ Prev</button>
+            <span className="small muted">Page {docPage}</span>
+            <button className="btn ghost sm" disabled={docPage * docPageSize >= (data.documents || []).filter(d => !docSearch || String(d.documentName||'').toLowerCase().includes(docSearch.toLowerCase()) || String(d.batchName||'').toLowerCase().includes(docSearch.toLowerCase())).length} onClick={() => setDocPage(p => p + 1)}>Next ▶</button>
+          </div>
+        </div>
         {data.documents.length === 0 ? (
           <div className="small muted">No live document stats yet.</div>
         ) : (
-          <DataTable 
-            data={data.documents}
-            columns={[
-              { key: 'documentName', label: 'Document' },
-              { key: 'batchName', label: 'Batch' },
-              { key: 'totalAssigned', label: 'Assigned', format: (val) => val.toLocaleString() },
-              { key: 'acknowledged', label: 'Acknowledged', format: (val) => val.toLocaleString() },
-              { key: 'pending', label: 'Pending', format: (val) => val.toLocaleString() },
-              { key: 'avgTimeToComplete', label: 'Avg. Time', format: (val) => `${val} days` }
-            ]}
-          />
+          (() => {
+            const filtered = (data.documents || [])
+              .filter(d => !docSearch || String(d.documentName||'').toLowerCase().includes(docSearch.toLowerCase()) || String(d.batchName||'').toLowerCase().includes(docSearch.toLowerCase()));
+            const { items } = paginate(filtered, docPage, docPageSize);
+            return (
+              <DataTable 
+                data={items}
+                columns={[
+                  { key: 'documentName', label: 'Document' },
+                  { key: 'batchName', label: 'Batch' },
+                  { key: 'totalAssigned', label: 'Assigned', format: (val) => safeNum(val).toLocaleString() },
+                  { key: 'acknowledged', label: 'Acknowledged', format: (val) => safeNum(val).toLocaleString() },
+                  { key: 'pending', label: 'Pending', format: (val) => safeNum(val).toLocaleString() },
+                  { key: 'avgTimeToComplete', label: 'Avg. Time', format: (val) => `${safeNum(val)} days` }
+                ]}
+              />
+            );
+          })()
         )}
       </div>
 

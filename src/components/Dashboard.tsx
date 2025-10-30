@@ -24,7 +24,7 @@ const Dashboard: React.FC = () => {
     const load = async () => {
       try {
         setLoading(true);
-        const list = await getBatches(token ?? undefined, account?.username || undefined);
+  const list = await getBatches(token ?? undefined, account?.username?.toLowerCase() || undefined);
         setBatches(Array.isArray(list) ? list : []);
         setError(null);
       } catch {
@@ -37,7 +37,7 @@ const Dashboard: React.FC = () => {
 
   // Pre-modal visibility: show a subtle banner for due policies
   useEffect(() => {
-    if (!account?.username) { setDuePoliciesCount(0); return; }
+  if (!account?.username) { setDuePoliciesCount(0); return; }
     let cancelled = false;
     (async () => {
       try {
@@ -55,7 +55,7 @@ const Dashboard: React.FC = () => {
       const m: Record<string, { percent: number; total: number; acknowledged: number }> = {};
       for (const b of batches) {
         try {
-          const p = await getUserProgress(b.toba_batchid, token ?? undefined, undefined, account?.username || undefined);
+          const p = await getUserProgress(b.toba_batchid, token ?? undefined, undefined, account?.username?.toLowerCase() || undefined);
           m[b.toba_batchid] = { percent: p.percent, total: p.total ?? 0, acknowledged: p.acknowledged ?? 0 };
         } catch {
           m[b.toba_batchid] = { percent: 0, total: 0, acknowledged: 0 };

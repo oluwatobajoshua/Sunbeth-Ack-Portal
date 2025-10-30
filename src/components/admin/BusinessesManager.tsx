@@ -4,7 +4,7 @@ import { getApiBase, isSQLiteEnabled } from '../../utils/runtimeConfig';
 import { confirmDialog, showToast } from '../../utils/alerts';
 import { createBusiness, deleteBusiness, updateBusiness } from '../../services/dbService';
 
-type Biz = { id: number; name: string; code?: string; isActive?: boolean; description?: string };
+type Biz = { id: string; name: string; code?: string; isActive?: boolean; description?: string };
 
 const apiBase = () => (getApiBase() as string) || '';
 const sqliteOn = () => isSQLiteEnabled() && !!apiBase();
@@ -13,7 +13,7 @@ const BusinessesManager: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   const [items, setItems] = useState<Biz[]>([]);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<{ name: string; code: string; isActive: boolean; description: string }>({ name: '', code: '', isActive: true, description: '' });
-  const [editRow, setEditRow] = useState<Record<number, Partial<Biz>>>({});
+  const [editRow, setEditRow] = useState<Record<string, Partial<Biz>>>({});
 
   const load = async () => {
     if (!sqliteOn()) return;
@@ -45,7 +45,7 @@ const BusinessesManager: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
     finally { setBusy(false); }
   };
 
-  const save = async (id: number) => {
+  const save = async (id: string) => {
     if (!canEdit || !sqliteOn()) return;
     const row = editRow[id]; if (!row) return;
     setBusy(true);
@@ -58,7 +58,7 @@ const BusinessesManager: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
     finally { setBusy(false); }
   };
 
-  const del = async (id: number) => {
+  const del = async (id: string) => {
     if (!canEdit || !sqliteOn()) return;
     const ok = await confirmDialog('Delete this business?', 'This will unassign it from any recipients.', 'Delete', 'Cancel', { icon: 'warning' as any });
     if (!ok) return;

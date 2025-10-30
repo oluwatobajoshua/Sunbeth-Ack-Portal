@@ -260,13 +260,13 @@ const AdminPanel: React.FC = () => {
     showToast('Removed locally, but server removal failed', 'warning');
   };
   // Maintain user -> business mapping by email
-  const setUserBusiness = (emailOrUpn: string, businessId: number | null) => {
+  const setUserBusiness = (emailOrUpn: string, businessId: string | null) => {
     const key = (emailOrUpn || '').trim().toLowerCase();
     if (!key) return;
     setBusinessMap(prev => ({ ...prev, [key]: businessId }));
   };
-  const applyBusinessToAll = (businessId: number | null) => {
-    const next: Record<string, number | null> = {};
+  const applyBusinessToAll = (businessId: string | null) => {
+    const next: Record<string, string | null> = {};
     for (const u of mappingUsers) {
       const email = (u.mail || u.userPrincipalName || '').trim().toLowerCase();
       if (email) next[email] = businessId;
@@ -322,10 +322,10 @@ const AdminPanel: React.FC = () => {
   })();
   const sqliteEnabled = isSQLiteEnabled();
   const [overviewStats, setOverviewStats] = useState<{ totalBatches: number; activeBatches: number; totalUsers: number; completionRate: number; overdueBatches: number; avgCompletionTime: number } | null>(null);
-  type Business = { id: number; name: string; code?: string; isActive?: boolean };
+  type Business = { id: string; name: string; code?: string; isActive?: boolean };
   const [businesses, setBusinesses] = useState<Business[]>([]);
-  const [businessMap, setBusinessMap] = useState<Record<string, number | null>>({}); // emailLower -> businessId
-  const [defaultBusinessId, setDefaultBusinessId] = useState<number | ''>('');
+  const [businessMap, setBusinessMap] = useState<Record<string, string | null>>({}); // emailLower -> businessId (string ids)
+  const [defaultBusinessId, setDefaultBusinessId] = useState<string | ''>('');
   useEffect(() => {
     if (!sqliteEnabled) return;
     (async () => {
@@ -338,7 +338,7 @@ const AdminPanel: React.FC = () => {
       } catch {}
     })();
   }, [sqliteEnabled]);
-  // Load businesses from SQLite
+  // Load businesses from backend API
   useEffect(() => {
     if (!sqliteEnabled) return;
     (async () => {
@@ -348,12 +348,12 @@ const AdminPanel: React.FC = () => {
         // Normalize shape
         const mapped: Business[] = arr
           .map((row: any) => ({
-            id: Number(row.id ?? row.businessId ?? row.ID ?? row.toba_businessid),
+            id: String(row.id ?? row.businessId ?? row.ID ?? row.toba_businessid ?? ''),
             name: String(row.name ?? row.Title ?? row.title ?? row.toba_name ?? row.code ?? 'Business'),
             code: row.code ?? row.toba_code,
             isActive: (row.isActive ?? row.toba_isactive) ? true : false
           } as Business))
-          .filter((b: Business) => Number.isFinite(b.id) && !!b.name);
+          .filter((b: Business) => !!b.id && !!b.name);
         setBusinesses(mapped);
       } catch (e) {
         console.warn('Failed to load businesses', e);
@@ -476,7 +476,7 @@ const AdminPanel: React.FC = () => {
           const g = batchForm.selectedGroups.find(x => x.id === firstGid);
           if (g?.displayName) primaryGroupName = g.displayName;
         }
-        const mappedBusinessId = (businessMap[emailLower] ?? (defaultBusinessId !== '' ? Number(defaultBusinessId) : null));
+  const mappedBusinessId = (businessMap[emailLower] ?? (defaultBusinessId !== '' ? String(defaultBusinessId) : null));
         return {
           businessId: mappedBusinessId,
           user: emailLower,
@@ -739,10 +739,10 @@ const AdminPanel: React.FC = () => {
       const selectedUsers = (recs || []).map((r: any) => ({ id: r.email || r.user || r.userPrincipalName || r.id || r.email, displayName: r.displayName || r.email, userPrincipalName: r.email, department: r.department, jobTitle: r.jobTitle } as any));
       const selectedGroups: GraphGroup[] = [];
       // Map user -> business
-      const nextMap: Record<string, number | null> = {};
+      const nextMap: Record<string, string | null> = {};
       for (const r of recs) {
         const emailLower = String(r.email || r.user || '').toLowerCase();
-        if (emailLower) nextMap[emailLower] = r.businessId != null ? Number(r.businessId) : null;
+        if (emailLower) nextMap[emailLower] = r.businessId != null ? String(r.businessId) : null;
       }
       // Track originals for diffing
       setOriginalRecipientEmails(new Set((recs || []).map((r: any) => String(r.email || r.user || '').trim().toLowerCase()).filter(Boolean)));
@@ -808,10 +808,10 @@ const AdminPanel: React.FC = () => {
       const selectedUsers = (recs || []).map((r: any) => ({ id: r.email || r.user || r.userPrincipalName || r.id || r.email, displayName: r.displayName || r.email, userPrincipalName: r.email, department: r.department, jobTitle: r.jobTitle } as any));
       const selectedGroups: GraphGroup[] = [];
       // Map user -> business
-      const nextMap: Record<string, number | null> = {};
+      const nextMap: Record<string, string | null> = {};
       for (const r of recs) {
         const emailLower = String(r.email || r.user || '').toLowerCase();
-        if (emailLower) nextMap[emailLower] = r.businessId != null ? Number(r.businessId) : null;
+        if (emailLower) nextMap[emailLower] = r.businessId != null ? String(r.businessId) : null;
       }
 
       setBatchForm({

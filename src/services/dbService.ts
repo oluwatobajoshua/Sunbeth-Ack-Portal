@@ -18,7 +18,8 @@ import { apiGet, apiPost, apiPut, apiDelete } from './api';
  * @param token Optional bearer token (not used with current backends)
  */
 export const getBatches = async (_token?: string, userEmail?: string) => {
-  const q = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
+  const email = userEmail ? String(userEmail).trim().toLowerCase() : undefined;
+  const q = email ? `?email=${encodeURIComponent(email)}` : '';
   try { return await apiGet(`/api/batches${q}`); } catch { return [] as any[]; }
 };
 
@@ -27,7 +28,7 @@ export const getBatches = async (_token?: string, userEmail?: string) => {
  * @param batchId Batch identifier
  * @param token Optional bearer token (not used with current backends)
  */
-export const getDocumentsByBatch = async (batchId: string, _token?: string) => {
+export const getDocumentsByBatch = async (batchId: string) => {
   try { return await apiGet(`/api/batches/${encodeURIComponent(batchId)}/documents`); } catch { return [] as any[]; }
 };
 
@@ -38,7 +39,8 @@ export const getDocumentsByBatch = async (batchId: string, _token?: string) => {
  * @param userId Optional user id (not used with current backends)
  */
 export const getUserProgress = async (batchId: string, _token?: string, _userId?: string, userEmail?: string) => {
-  const q = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
+  const email = userEmail ? String(userEmail).trim().toLowerCase() : undefined;
+  const q = email ? `?email=${encodeURIComponent(email)}` : '';
   try { return await apiGet(`/api/batches/${encodeURIComponent(batchId)}/progress${q}`); } catch { return { acknowledged: 0, total: 0, percent: 0 } as any; }
 };
 
@@ -46,7 +48,8 @@ export const getUserProgress = async (batchId: string, _token?: string, _userId?
  * List documents in a batch, separated into acknowledged vs pending (ids only for acknowledged).
  */
 export const getAcknowledgedDocIds = async (batchId: string, _token?: string, userEmail?: string): Promise<string[]> => {
-  const q = userEmail ? `?email=${encodeURIComponent(userEmail)}` : '';
+  const email = userEmail ? String(userEmail).trim().toLowerCase() : undefined;
+  const q = email ? `?email=${encodeURIComponent(email)}` : '';
   try { const j = await apiGet(`/api/batches/${encodeURIComponent(batchId)}/acks${q}`); return Array.isArray(j?.ids) ? j.ids : []; } catch { return []; }
 };
 
@@ -61,7 +64,7 @@ export const getDocumentById = async (docId: string): Promise<any | null> => {
  * Fetch the list of businesses.
  * @param token Optional bearer token (not used with current backends)
  */
-export const getBusinesses = async (_token?: string) => {
+export const getBusinesses = async () => {
   try { return await apiGet(`/api/businesses`); } catch { return [] as any[]; }
 };
 
@@ -70,7 +73,7 @@ export const getBusinesses = async (_token?: string) => {
  * @param business Business data to create
  * @param token Optional bearer token (not used with current backends)
  */
-export const createBusiness = async (business: { name: string; code?: string; isActive?: boolean; description?: string }, _token?: string) => {
+export const createBusiness = async (business: { name: string; code?: string; isActive?: boolean; description?: string }) => {
   return await apiPost(`/api/businesses`, business);
 };
 
@@ -80,7 +83,7 @@ export const createBusiness = async (business: { name: string; code?: string; is
  * @param business Updated business data
  * @param token Optional bearer token (not used with current backends)
  */
-export const updateBusiness = async (id: number, business: { name?: string; code?: string; isActive?: boolean; description?: string }, _token?: string) => {
+export const updateBusiness = async (id: number | string, business: { name?: string; code?: string; isActive?: boolean; description?: string }) => {
   return await apiPut(`/api/businesses/${id}`, business);
 };
 
@@ -89,7 +92,7 @@ export const updateBusiness = async (id: number, business: { name?: string; code
  * @param id Business ID to delete
  * @param token Optional bearer token (not used with current backends)
  */
-export const deleteBusiness = async (id: number, _token?: string) => {
+export const deleteBusiness = async (id: number | string) => {
   return await apiDelete(`/api/businesses/${id}`);
 };
 

@@ -1,6 +1,7 @@
 import React from 'react';
 import PdfViewer from '../viewers/PdfViewer';
 import DocxViewer from '../viewers/DocxViewer';
+import GenericInline from '../viewers/GenericInline';
 
 interface ViewerFrameProps {
   isPdf: boolean;
@@ -19,9 +20,8 @@ const ViewerFrame: React.FC<ViewerFrameProps> = ({ isPdf, isDocx, viewerUrls, do
         ) : isDocx ? (
           <DocxViewer url={Array.isArray(viewerUrls) ? viewerUrls[0] : viewerUrls} />
         ) : (
-          <div className="muted small" style={{ padding: 12, textAlign: 'center', border: '1px solid #eee', borderRadius: 6 }}>
-            Preview not available for this file type. Use Download or Open in new tab.
-          </div>
+          // Try a generic inline viewer via iframe; backend proxy clears X-Frame-Options
+          <GenericInline url={viewerUrls} />
         )
       ) : (
         <div className="muted small" style={{ padding: 12, textAlign: 'center' }}>

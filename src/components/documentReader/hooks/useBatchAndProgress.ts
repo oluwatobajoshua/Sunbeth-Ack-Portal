@@ -35,7 +35,7 @@ export function useBatchAndProgress(
       try {
         if (batchIdFromQuery) {
           const batchId = batchIdFromQuery as string;
-          const list = await getDocumentsByBatch(batchId, token ?? undefined);
+          const list = await getDocumentsByBatch(batchId);
           setDocs(list);
           const idx = list.findIndex((d: Doc) => d.toba_documentid === id);
           setIndex(idx >= 0 ? idx : 0);

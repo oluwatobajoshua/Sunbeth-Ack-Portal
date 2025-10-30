@@ -9,7 +9,7 @@ import { showToast } from '../../utils/alerts';
 import { getApiBase } from '../../utils/runtimeConfig';
 import { type SimpleDoc } from './DocumentListEditor';
 
-type Business = { id: number; name: string; code?: string; isActive?: boolean };
+type Business = { id: string; name: string; code?: string; isActive?: boolean };
 
 export type BatchFormState = {
   name: string;
@@ -59,12 +59,12 @@ export interface BatchEditorProps {
   businesses: Business[];
   mappingUsers: GraphUser[];
   expandGroupsForMapping: () => void;
-  businessMap: Record<string, number | null>;
-  setUserBusiness: (emailOrUpn: string, businessId: number | null) => void;
-  applyBusinessToAll: (businessId: number | null) => void;
-  setBusinessMap: (map: Record<string, number | null>) => void;
-  defaultBusinessId: number | '';
-  setDefaultBusinessId: (v: number | '') => void;
+  businessMap: Record<string, string | null>;
+  setUserBusiness: (emailOrUpn: string, businessId: string | null) => void;
+  applyBusinessToAll: (businessId: string | null) => void;
+  setBusinessMap: (map: Record<string, string | null>) => void;
+  defaultBusinessId: string | '';
+  setDefaultBusinessId: (v: string | '') => void;
 
   // Helpers
   mergeDocuments: (prev: SimpleDoc[], incoming: SimpleDoc[]) => SimpleDoc[];
@@ -280,12 +280,12 @@ const BatchEditor: React.FC<BatchEditorProps> = (props) => {
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <span className="small muted">Default:</span>
-                <select value={String(defaultBusinessId)} onChange={e => setDefaultBusinessId(e.target.value ? Number(e.target.value) : '')}>
+                <select value={String(defaultBusinessId)} onChange={e => setDefaultBusinessId(e.target.value ? e.target.value : '')}>
                   <option value="">—</option>
                   {businesses.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
                 <span className="small muted">Apply to all:</span>
-                <select onChange={e => applyBusinessToAll(e.target.value ? Number(e.target.value) : null)} defaultValue="">
+                <select onChange={e => applyBusinessToAll(e.target.value ? e.target.value : null)} defaultValue="">
                   <option value="">—</option>
                   {businesses.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
@@ -308,7 +308,7 @@ const BatchEditor: React.FC<BatchEditorProps> = (props) => {
                         <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.displayName}</div>
                         <div className="small muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</div>
                       </div>
-                      <select value={String(sel)} onChange={e => props.setUserBusiness(email, e.target.value ? Number(e.target.value) : null)}>
+                      <select value={String(sel)} onChange={e => props.setUserBusiness(email, e.target.value ? e.target.value : null)}>
                         <option value="">— No business —</option>
                         {businesses.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                       </select>
@@ -348,12 +348,12 @@ const BatchEditor: React.FC<BatchEditorProps> = (props) => {
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span className="small muted">Default:</span>
-                <select value={String(defaultBusinessId)} onChange={e => setDefaultBusinessId(e.target.value ? Number(e.target.value) : '')}>
+                <select value={String(defaultBusinessId)} onChange={e => setDefaultBusinessId(e.target.value ? e.target.value : '')}>
                   <option value="">—</option>
                   {businesses.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
                 <span className="small muted">Apply to all:</span>
-                <select onChange={e => applyBusinessToAll(e.target.value ? Number(e.target.value) : null)} defaultValue="">
+                <select onChange={e => applyBusinessToAll(e.target.value ? e.target.value : null)} defaultValue="">
                   <option value="">—</option>
                   {businesses.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                 </select>
@@ -370,7 +370,7 @@ const BatchEditor: React.FC<BatchEditorProps> = (props) => {
                         <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.displayName}</div>
                         <div className="small muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</div>
                       </div>
-                      <select value={String(sel)} onChange={e => props.setUserBusiness(email, e.target.value ? Number(e.target.value) : null)}>
+                      <select value={String(sel)} onChange={e => props.setUserBusiness(email, e.target.value ? e.target.value : null)}>
                         <option value="">— No business —</option>
                         {businesses.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
                       </select>
