@@ -64,6 +64,21 @@ const AdminPanel: React.FC = () => {
     } catch { setApiHealth('down'); }
   };
   useEffect(() => { pingApi(); }, [/* on mount and when sqlite flag changes */]);
+  const [dbDriver, setDbDriver] = useState<string>('unknown');
+  const [dbOk, setDbOk] = useState<null | boolean>(null);
+  const pingDb = async () => {
+    try {
+      if (!sqliteEnabled) { setDbDriver('unknown'); setDbOk(null); return; }
+      const base = (getApiBase() as string) || '';
+      if (!base) { setDbDriver('unknown'); setDbOk(null); return; }
+      const res = await fetch(`${base}/api/diag/db`, { cache: 'no-store' });
+      const j = await res.json().catch(() => null);
+      const driver = (j?.driver || 'unknown');
+      setDbDriver(String(driver));
+      setDbOk(!!(j && (j.canary?.ok === 1 || j.canary?.ok === true)));
+    } catch { setDbOk(false); }
+  };
+  useEffect(() => { pingDb(); }, [/* on mount and when sqlite flag changes */]);
   const [healthOpen, setHealthOpen] = useState(false);
   const [healthSteps, setHealthSteps] = useState<Step[] | null>(null);
   const [granting, setGranting] = useState(false);
@@ -857,6 +872,13 @@ const AdminPanel: React.FC = () => {
               </div>
             )}
             {sqliteEnabled && (
+              <div className="small" title="Database connection (from /api/diag/db)" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', border: '1px solid #eee', borderRadius: 999 }}>
+                <span style={{ width: 10, height: 10, borderRadius: '50%', background: dbOk===true ? '#28a745' : dbOk===false ? '#dc3545' : '#ffc107' }} />
+                <span>DB: {dbDriver}{dbOk===true ? ' OK' : dbOk===false ? ' Error' : ''}</span>
+                <button className="btn ghost sm" onClick={pingDb} style={{ marginLeft: 6 }}>Refresh</button>
+              </div>
+            )}
+            {sqliteEnabled && (
               (() => {
                 try {
                   const base = (getApiBase() as string) || '';
@@ -952,6 +974,27 @@ const AdminPanel: React.FC = () => {
               <div className="card" style={{ padding: 16, textAlign: 'center' }}>
                 <div style={{ fontSize: 28, fontWeight: 'bold', color: '#17a2b8' }}>{overviewStats?.overdueBatches ?? 0}</div>
                 <div className="small muted">Overdue Batches</div>
+              </div>
+              {/* Database status quick card */}
+              <div className="card" style={{ padding: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontWeight: 700, color: 'var(--primary)' }}>Database Status</div>
+                    <div className="small muted">Driver: {dbDriver}</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span className="badge" style={{ background: dbOk===true ? '#d4edda' : dbOk===false ? '#f8d7da' : '#fff3cd', color: '#333' }}>{dbOk===true ? 'OK' : dbOk===false ? 'Error' : 'Unknown'}</span>
+                    {sqliteEnabled && (
+                      <button className="btn ghost xs" onClick={pingDb}>Refresh</button>
+                    )}
+                    {sqliteEnabled && (() => {
+                      try { const base = (getApiBase() as string) || ''; if (!base) return null; return (
+                        <a className="btn ghost xs" href={`${base}/api/diag/db`} target="_blank" rel="noreferrer">Open diag</a>
+                      ); } catch { return null; }
+                    })()}
+                  </div>
+                </div>
+                <div className="small muted" style={{ marginTop: 8 }}>This checks the backend endpoint /api/diag/db to verify connectivity. For production we expect driver=rtdb.</div>
               </div>
             </div>
 
