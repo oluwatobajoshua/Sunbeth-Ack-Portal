@@ -8,9 +8,9 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { fetchUserGroups } from '../services/graphService';
-import { getRoles, type DbRole } from '../services/dbService';
+import { getRoles } from '../services/dbService';
 import { getPermissionCatalog, getEffectivePermissions } from '../services/rbacService';
-import { isSQLiteEnabled } from '../utils/runtimeConfig';
+import { getApiBase } from '../utils/runtimeConfig';
 
 type RBAC = { 
   role: 'SuperAdmin'|'Admin'|'Manager'|'Employee', 
@@ -36,8 +36,15 @@ const getEnvEmails = (envVar: string): string[] => {
 };
 
 const SUPER_ADMINS = getEnvEmails('REACT_APP_SUPER_ADMINS');
-const ADMINS = getEnvEmails('REACT_APP_ADMINS');
-const MANAGERS = getEnvEmails('REACT_APP_MANAGERS');
+// Accept both REACT_APP_ADMINS and legacy REACT_APP_ADMIN_EMAILS for admin role configuration
+const ADMINS = Array.from(new Set([
+  ...getEnvEmails('REACT_APP_ADMINS'),
+  ...getEnvEmails('REACT_APP_ADMIN_EMAILS')
+]));
+const MANAGERS = Array.from(new Set([
+  ...getEnvEmails('REACT_APP_MANAGERS'),
+  ...getEnvEmails('REACT_APP_MANAGER_EMAILS')
+]));
 
 // DB-backed role caches (populated at runtime when SQLite API is enabled)
 let DB_SUPER_ADMINS: string[] = [];
@@ -60,32 +67,36 @@ const determineRole = (userEmail: string, groups: string[]): RBAC['role'] => {
   return 'Employee';
 };
 
+// eslint-disable-next-line max-lines-per-function, complexity
 export const RBACProvider: React.FC<{children: React.ReactNode}> = ({ children }) => {
   const { token, account } = useAuth();
   const [role, setRole] = useState<RBAC['role']>('Employee');
   const [perms, setPerms] = useState<Record<string, boolean>>({});
 
   // Fetch DB roles (if enabled) and then groups when token is available
+  // eslint-disable-next-line max-lines-per-function, complexity
   useEffect(() => {
     if (!token || !account) { setRole('Employee'); return; }
     let active = true;
     const userEmail = account.username || '';
 
-    (async () => {
+  /* eslint-disable complexity */
+  (async () => {
       try {
-        if (isSQLiteEnabled()) {
+        // If an API base is configured (or relative API is available), try to load DB-backed roles
+        // This works for any backend driver (sqlite, rtdb, etc.) as long as /api/roles is implemented.
+        if (getApiBase() !== null) {
           const roles = await getRoles();
           if (!active) return;
           DB_SUPER_ADMINS = roles.filter(r => r.role === 'SuperAdmin').map(r => r.email.toLowerCase());
           DB_ADMINS = roles.filter(r => r.role === 'Admin').map(r => r.email.toLowerCase());
           DB_MANAGERS = roles.filter(r => r.role === 'Manager').map(r => r.email.toLowerCase());
-        } else {
-          DB_SUPER_ADMINS = [];
-          DB_ADMINS = [];
-          DB_MANAGERS = [];
         }
-      } catch {
+      } catch (_e) {
         // ignore and use env only
+        DB_SUPER_ADMINS = [];
+        DB_ADMINS = [];
+        DB_MANAGERS = [];
       }
 
       // After DB roles are loaded, check immediate role from DB/env
@@ -106,23 +117,26 @@ export const RBACProvider: React.FC<{children: React.ReactNode}> = ({ children }
       } catch {
         if (active && !userEmail) setRole('Employee');
       }
-    })();
+  })();
+  /* eslint-enable complexity */
     return () => { active = false; };
   }, [token, account]);
 
   // Load effective permissions (from server) or fallback to defaults by role
+  // eslint-disable-next-line max-lines-per-function, complexity
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+  /* eslint-disable complexity */
+  (async () => {
       const email = account?.username || '';
-      const sqlite = isSQLiteEnabled();
       try {
-        if (sqlite && email) {
+        // If API is available, try to load effective permissions from backend
+        if (getApiBase() !== null && email) {
           const eff = await getEffectivePermissions(email);
           if (!cancelled) setPerms(eff.permissions || {});
           return;
         }
-      } catch {}
+  } catch (_e) { /* ignore and fall back to defaults */ }
       // Fallback defaults by role
       try {
         const catalog = await getPermissionCatalog().catch(() => []);
@@ -140,8 +154,9 @@ export const RBACProvider: React.FC<{children: React.ReactNode}> = ({ children }
           for (const k of allow) mapping[k] = true;
         }
         if (!cancelled) setPerms(mapping);
-      } catch {}
-    })();
+  } catch (_e) { /* ignore and keep previous perms */ }
+  })();
+  /* eslint-enable complexity */
     return () => { cancelled = true; };
   }, [role, account]);
 
