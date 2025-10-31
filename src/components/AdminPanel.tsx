@@ -49,7 +49,7 @@ const AdminPanel: React.FC = () => {
   const { role, canSeeAdmin, canEditAdmin, isSuperAdmin, perms } = useRBAC();
   const { account } = useAuthCtx();
   const { externalSupport } = useFeatureFlags();
-  const [activeTab, setActiveTab] = useState<'overview' | 'settings' | 'policies' | 'rbac' | 'manage' | 'batch' | 'analytics' | 'notificationEmails' | 'audit'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'settings' | 'policies' | 'rbac' | 'manage' | 'batch' | 'analytics' | 'notificationEmails' | 'diagnostics'>('overview');
   const [editingBatchId, setEditingBatchId] = useState<string | null>(null);
   const [originalRecipientEmails, setOriginalRecipientEmails] = useState<Set<string>>(new Set());
   const [originalDocUrls, setOriginalDocUrls] = useState<Set<string>>(new Set());
@@ -329,9 +329,9 @@ const AdminPanel: React.FC = () => {
       // Analytics only if allowed (Super Admin always)
       ...((isSuperAdmin || perms?.viewAnalytics) ? [{ id: 'analytics', label: 'Analytics', icon: '📈' } as any] : [])
     );
-    // Audit Logs (Super Admin or viewDebugLogs permission)
-    if (isSuperAdmin || perms?.viewDebugLogs) {
-      base.push({ id: 'audit', label: 'Audit Logs', icon: '🛡️' } as any);
+    // Diagnostics tab (Super Admin only)
+    if (isSuperAdmin) {
+      base.push({ id: 'diagnostics', label: 'System Diagnostics', icon: '🧪' } as any);
     }
     return base;
   })();
@@ -864,78 +864,12 @@ const AdminPanel: React.FC = () => {
             {/* Intentionally removed loud role badge for a more professional, minimal header */}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {sqliteEnabled && (
-              <div className="small" title="SQLite API health" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', border: '1px solid #eee', borderRadius: 999 }}>
-                <span style={{ width: 10, height: 10, borderRadius: '50%', background: apiHealth==='ok' ? '#28a745' : apiHealth==='down' ? '#dc3545' : '#ffc107' }} />
-                <span>API: {apiHealth === 'ok' ? 'OK' : apiHealth === 'down' ? 'Down' : '—'}</span>
-                <button className="btn ghost sm" onClick={pingApi} style={{ marginLeft: 6 }}>Refresh</button>
-              </div>
-            )}
-            {sqliteEnabled && (
-              <div className="small" title="Database connection (from /api/diag/db)" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', border: '1px solid #eee', borderRadius: 999 }}>
-                <span style={{ width: 10, height: 10, borderRadius: '50%', background: dbOk===true ? '#28a745' : dbOk===false ? '#dc3545' : '#ffc107' }} />
-                <span>DB: {dbDriver}{dbOk===true ? ' OK' : dbOk===false ? ' Error' : ''}</span>
-                <button className="btn ghost sm" onClick={pingDb} style={{ marginLeft: 6 }}>Refresh</button>
-              </div>
-            )}
-            {sqliteEnabled && (
-              (() => {
-                try {
-                  const base = (getApiBase() as string) || '';
-                  if (!base) return null;
-                  const host = new URL(base).host;
-                  return (
-                    <div className="small" title={`Backend API: ${base}`} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px', border: '1px solid #eee', borderRadius: 999 }}>
-                      <span className="muted">Backend:</span>
-                      <a href={`${base}/api/health`} target="_blank" rel="noreferrer" className="small" title="Open /api/health">
-                        {host}
-                      </a>
-                      <button
-                        className="btn ghost xs"
-                        onClick={async () => {
-                          try { await navigator.clipboard.writeText(base); showToast('API base copied', 'success'); }
-                          catch { showToast('Copy failed', 'error'); }
-                        }}
-                        title="Copy API base URL"
-                      >Copy</button>
-                    </div>
-                  );
-                } catch { return null; }
-              })()
-            )}
             {(isSuperAdmin || perms?.exportAnalytics) && (
               <button className="btn ghost sm" onClick={async () => {
                 try {
                   await exportAnalyticsExcel();
                 } catch (e) { console.warn('Excel export failed', e); showToast('Excel export failed', 'error'); }
               }}>Export Excel</button>
-            )}
-            <button className="btn ghost sm" onClick={async () => {
-              setHealthOpen(true);
-              setHealthSteps(null);
-              try { setHealthSteps(await runAuthAndGraphCheck()); } catch (e) { setHealthSteps([{ name: 'Health check', ok: false, detail: String(e) }]); }
-            }}>System Health</button>
-            {(isSuperAdmin || perms?.viewDebugLogs) && (
-              <button 
-                className="btn ghost sm" 
-                onClick={() => setShowDebugConsole(true)}
-                title="Open batch creation debug console"
-              >
-                🔍 Debug Logs
-              </button>
-            )}
-            {sqliteEnabled && canEditAdmin && (
-              <button className="btn ghost sm" onClick={async () => {
-                try {
-                  const base = (getApiBase() as string);
-                  const email = account?.username || 'seed.user@sunbeth.com';
-                  const res = await fetch(`${base}/api/seed?email=${encodeURIComponent(email)}`, { method: 'POST' });
-                  if (!res.ok) throw new Error('seed_failed');
-                  showToast('Seeded demo data', 'success');
-                } catch {
-                  showToast('Seed failed', 'error');
-                }
-              }}>Seed Data</button>
             )}
           </div>
         </div>
@@ -998,41 +932,7 @@ const AdminPanel: React.FC = () => {
               </div>
             </div>
 
-            {/* Permissions Status */}
-            <div className="card" style={{ marginTop: 16, padding: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <div>
-                  <div style={{ fontWeight: 700, color: 'var(--primary)' }}>Permissions Status</div>
-                  <div className="muted small">Required Microsoft Graph scopes</div>
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn ghost sm" onClick={() => checkPermissions()}>Refresh</button>
-                  <button className="btn sm" onClick={async () => {
-                    try {
-                      setGranting(true);
-                      // Request all needed scopes in a user-friendly sequence
-                      for (const s of requiredScopes) { try { await getGraphToken([s]); } catch {} }
-                      await checkPermissions();
-                      showToast('Permission prompts completed', 'success');
-                    } finally { setGranting(false); }
-                  }} disabled={granting}>Grant All</button>
-                </div>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8 }}>
-                {requiredScopes.map(s => (
-                  <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, border: '1px solid #eee', borderRadius: 6 }}>
-                    <span style={{ width: 10, height: 10, borderRadius: '50%', background: permStatus[s] ? '#28a745' : '#dc3545' }} />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600 }}>{s}</div>
-                      {!permStatus[s] && (
-                        <button className="btn ghost sm" onClick={async () => { try { await getGraphToken([s]); } catch {}; await checkPermissions(); }}>Grant {s}</button>
-                      )}
-                      {permStatus[s] && <div className="small muted">Granted</div>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            {/* Removed Permissions Status from Overview; moved to Diagnostics tab */}
 
 
           </div>
@@ -1215,9 +1115,132 @@ const AdminPanel: React.FC = () => {
           />
         )}
 
-        {activeTab === 'audit' && (
-          <div>
-            <AuditLogs />
+        {activeTab === 'diagnostics' && isSuperAdmin && (
+          <div style={{ display: 'grid', gap: 16 }}>
+            {/* API & DB Status */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
+              <div className="card" style={{ padding: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontWeight: 700, color: 'var(--primary)' }}>API Status</div>
+                    <div className="small muted">/api/health</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ width: 10, height: 10, borderRadius: '50%', background: apiHealth==='ok' ? '#28a745' : apiHealth==='down' ? '#dc3545' : '#ffc107' }} />
+                    <button className="btn ghost xs" onClick={pingApi}>Refresh</button>
+                  </div>
+                </div>
+                {(() => { try { const base = (getApiBase() as string) || ''; if (!base) return null; const host = new URL(base).host; return (
+                  <div className="small muted" style={{ marginTop: 8 }}>
+                    Backend: <a href={`${base}/api/health`} target="_blank" rel="noreferrer">{host}</a>
+                    <button className="btn ghost xs" style={{ marginLeft: 8 }} title="Copy API base" onClick={async () => { try { await navigator.clipboard.writeText(base); showToast('API base copied', 'success'); } catch { showToast('Copy failed', 'error'); } }}>Copy</button>
+                  </div>
+                ); } catch { return null; } })()}
+              </div>
+              <div className="card" style={{ padding: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontWeight: 700, color: 'var(--primary)' }}>DB Status</div>
+                    <div className="small muted">Driver: {dbDriver || 'unknown'}</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{ width: 10, height: 10, borderRadius: '50%', background: dbOk===true ? '#28a745' : dbOk===false ? '#dc3545' : '#ffc107' }} />
+                    <button className="btn ghost xs" onClick={pingDb}>Refresh</button>
+                    {(() => { try { const base = (getApiBase() as string) || ''; if (!base) return null; return (<a className="btn ghost xs" href={`${base}/api/diag/db`} target="_blank" rel="noreferrer">Open diag</a>); } catch { return null; } })()}
+                  </div>
+                </div>
+                <div className="small muted" style={{ marginTop: 8 }}>Prod uses Firebase RTDB; local dev may show sql.js.</div>
+              </div>
+            </div>
+
+            {/* System Health */}
+            <div className="card" style={{ padding: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h3 style={{ margin: '0 0 4px 0', fontSize: 16 }}>System Health</h3>
+                  <div className="small muted">Runs environment, API, and Microsoft Graph checks.</div>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn ghost sm" onClick={async () => { setHealthOpen(true); setHealthSteps(null); try { setHealthSteps(await runAuthAndGraphCheck()); } catch (e) { setHealthSteps([{ name: 'Health check', ok: false, detail: String(e) }]); } }}>Run Checks</button>
+                </div>
+              </div>
+            </div>
+
+            {/* Debug Logs */}
+            <div className="card" style={{ padding: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h3 style={{ margin: '0 0 4px 0', fontSize: 16 }}>Debug Logs</h3>
+                  <div className="small muted">Open the batch creation debug console.</div>
+                </div>
+                <button className="btn ghost sm" onClick={() => setShowDebugConsole(true)} title="Open batch creation debug console">Open Console</button>
+              </div>
+            </div>
+
+            {/* Seed Data */}
+            {sqliteEnabled && canEditAdmin && (
+              <div className="card" style={{ padding: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <h3 style={{ margin: '0 0 4px 0', fontSize: 16 }}>Seed Data</h3>
+                    <div className="small muted">Insert demo data for local testing.</div>
+                  </div>
+                  <button className="btn ghost sm" onClick={async () => {
+                    try {
+                      const base = (getApiBase() as string);
+                      const email = account?.username || 'seed.user@sunbeth.com';
+                      const res = await fetch(`${base}/api/seed?email=${encodeURIComponent(email)}`, { method: 'POST' });
+                      if (!res.ok) throw new Error('seed_failed');
+                      showToast('Seeded demo data', 'success');
+                    } catch {
+                      showToast('Seed failed', 'error');
+                    }
+                  }}>Run Seed</button>
+                </div>
+              </div>
+            )}
+
+            {/* Permissions Status (Required Microsoft Graph scopes) */}
+            <div className="card" style={{ padding: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: 'var(--primary)' }}>Permissions Status</div>
+                  <div className="muted small">Required Microsoft Graph scopes</div>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn ghost sm" onClick={() => checkPermissions()}>Refresh</button>
+                  <button className="btn sm" onClick={async () => {
+                    try {
+                      setGranting(true);
+                      for (const s of requiredScopes) { try { await getGraphToken([s]); } catch {} }
+                      await checkPermissions();
+                      showToast('Permission prompts completed', 'success');
+                    } finally { setGranting(false); }
+                  }} disabled={granting}>Grant All</button>
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8 }}>
+                {requiredScopes.map(s => (
+                  <div key={s} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 8, border: '1px solid #eee', borderRadius: 6 }}>
+                    <span style={{ width: 10, height: 10, borderRadius: '50%', background: permStatus[s] ? '#28a745' : '#dc3545' }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600 }}>{s}</div>
+                      {!permStatus[s] && (
+                        <button className="btn ghost sm" onClick={async () => { try { await getGraphToken([s]); } catch {}; await checkPermissions(); }}>Grant {s}</button>
+                      )}
+                      {permStatus[s] && <div className="small muted">Granted</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Audit Logs */}
+            <div className="card" style={{ padding: 16 }}>
+              <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Audit Logs</h3>
+              <div className="small muted" style={{ marginBottom: 8 }}>Security events for external auth (login/reset/MFA/onboard)</div>
+              <AuditLogs />
+            </div>
           </div>
         )}
 

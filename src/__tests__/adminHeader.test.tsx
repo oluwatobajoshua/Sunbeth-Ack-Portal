@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
 import AdminPanel from '../components/AdminPanel';
@@ -68,10 +68,13 @@ const renderAdmin = () => {
 };
 
 describe('AdminPanel header', () => {
-  test('shows Backend API indicator with health link', async () => {
+  test('shows Backend API indicator with health link (now under Diagnostics tab)', async () => {
     renderAdmin();
+    // Open Diagnostics tab first
+    const diagTab = await screen.findByRole('button', { name: /system diagnostics/i });
+    diagTab.click();
 
-    // Host from mocked getApiBase
+    // Host from mocked getApiBase (link inside Diagnostics -> API Status card)
     const hostText = 'sunbeth-ack-portal-backend.vercel.app';
     const link = await screen.findByRole('link', { name: hostText });
     expect(link).toBeInTheDocument();
@@ -82,12 +85,10 @@ describe('AdminPanel header', () => {
     expect(copyBtn).toBeInTheDocument();
 
     // Trigger a manual refresh to ensure our mocked fetch runs in this test turn
-  const apiHealthBox = screen.getByTitle('SQLite API health');
-  const refresh = within(apiHealthBox).getByRole('button', { name: /refresh/i });
-  refresh.click();
+  const refreshButtons = await screen.findAllByRole('button', { name: /refresh/i });
+  refreshButtons[0].click();
 
-    // API health badge should be present and we should have pinged /api/health
-    expect(within(apiHealthBox).getByText(/API:/i)).toBeInTheDocument();
+    // We should have pinged /api/health
     await waitFor(() => {
       const mf = (globalThis as any).fetch as jest.Mock;
       const calledHealth = mf.mock.calls.some(([arg]) => {
