@@ -97,13 +97,13 @@ export const deleteBusiness = async (id: number | string) => {
 };
 
 // --- Roles management (SQLite API only) ---
-export type DbRole = { id: number; email: string; role: 'Admin'|'Manager'|'SuperAdmin'; createdAt?: string };
+export type DbRole = { id: number; email: string; role: string; createdAt?: string };
 
 export const getRoles = async (): Promise<DbRole[]> => {
   try { const j = await apiGet(`/api/roles`); return Array.isArray(j) ? j : []; } catch { return []; }
 };
 
-export const createRole = async (email: string, role: 'Admin'|'Manager'): Promise<DbRole> => {
+export const createRole = async (email: string, role: string): Promise<DbRole> => {
   return await apiPost(`/api/roles`, { email, role });
 };
 

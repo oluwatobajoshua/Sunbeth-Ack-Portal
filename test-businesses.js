@@ -49,20 +49,33 @@ async function testBusinesses() {
     const businesses = await makeRequest('GET', '/api/businesses');
     console.log('Businesses:', businesses);
 
-    // Test create business
-    console.log('\n3. Creating test business...');
-    const newBusiness = await makeRequest('POST', '/api/businesses', {
-      name: 'Test Business',
-      code: 'TEST',
-      isActive: true,
-      description: 'Test business for validation'
-    });
-    console.log('Created business:', newBusiness);
+    // Optional create business (requires RUN_CREATE=1); cleans up after
+    const shouldCreate = (process.env.RUN_CREATE === '1');
+    let createdId = null;
+    if (shouldCreate) {
+      console.log('\n3. Creating test business...');
+      const newBusiness = await makeRequest('POST', '/api/businesses', {
+        name: 'Test Business',
+        code: `TEST_${Date.now()}`,
+        isActive: true,
+        description: 'Test business for validation'
+      });
+      console.log('Created business:', newBusiness);
+      createdId = (newBusiness?.data?.id ?? null);
 
-    // Test get businesses again
-    console.log('\n4. Getting businesses after creation...');
-    const businessesAfter = await makeRequest('GET', '/api/businesses');
-    console.log('Businesses after creation:', businessesAfter);
+      console.log('\n4. Getting businesses after creation...');
+      const businessesAfter = await makeRequest('GET', '/api/businesses');
+      console.log('Businesses after creation:', businessesAfter);
+    } else {
+      console.log('\n3. Skipping create (set RUN_CREATE=1 to enable)');
+    }
+
+    // Cleanup if created
+    if (createdId) {
+      console.log(`\n🧹 Deleting test business id=${createdId}...`);
+      const del = await makeRequest('DELETE', `/api/businesses/${createdId}`);
+      console.log('Delete result:', del);
+    }
 
     console.log('\n✅ Business API tests completed successfully!');
   } catch (error) {

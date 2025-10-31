@@ -50,7 +50,7 @@ export const AppRoutes: React.FC = () => {
       <Route path="/document/:id/*" element={<RequireAuth><DocumentReader /></RequireAuth>} />
       <Route path="/summary" element={<RequireAuth><Summary /></RequireAuth>} />
       <Route path="/admin" element={<AdminGuard><AdminPanel /></AdminGuard>} />
-  <Route path="/super-admin" element={<AdminGuard><React.Suspense fallback={null}><SuperAdminConsole /></React.Suspense></AdminGuard>} />
+  <Route path="/super-admin" element={<SuperAdminGuard><React.Suspense fallback={null}><SuperAdminConsole /></React.Suspense></SuperAdminGuard>} />
       <Route path="/logout" element={<Logout />} />
     </Routes>
   );
@@ -64,7 +64,14 @@ export const RouteChangeLogger: React.FC = () => {
 };
 const AdminGuard: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const rbac = useRBAC();
-  if (!rbac.canSeeAdmin) return <Navigate to="/" replace />;
+  const canView = !!(rbac.canSeeAdmin || rbac.perms?.['viewAdmin']);
+  if (!canView) return <Navigate to="/" replace />;
+  return <>{children}</>;
+};
+
+const SuperAdminGuard: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const rbac = useRBAC();
+  if (!rbac.isSuperAdmin) return <Navigate to="/" replace />;
   return <>{children}</>;
 };
 

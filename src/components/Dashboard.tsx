@@ -113,7 +113,7 @@ const Dashboard: React.FC = () => {
           </div>
           <div style={{ textAlign: 'right' }}>
             <div className="muted small">Due by: <strong style={{ color: 'var(--accent)' }}>{earliestDue ? formatDate(earliestDue) : '—'}</strong></div>
-            {rbac.canSeeAdmin && (
+            {(rbac.canSeeAdmin || rbac.perms?.['viewAdmin']) && (
               <div style={{ marginTop: 8 }}>
                 <Link to="/admin"><button className="btn ghost sm">Admin</button></Link>
               </div>

@@ -45,7 +45,7 @@ export default function ModulesHub() {
     })();
   }, [apiBase]);
 
-  const canSeeAdmin = rbac.canSeeAdmin;
+  const canSeeAdmin = rbac.canSeeAdmin || !!rbac.perms?.['viewAdmin'];
   const visible = mods.filter(m => m.enabled !== false);
 
   return (

@@ -291,7 +291,7 @@ const AdminPanel: React.FC = () => {
 
 
 
-  if (!canSeeAdmin) {
+  if (!(canSeeAdmin || perms?.viewAdmin)) {
     return (
       <div className="container">
         <div className="card">
@@ -1130,13 +1130,13 @@ const AdminPanel: React.FC = () => {
               <div className="card" style={{ padding: 16 }}>
                 <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>External Users</h3>
                 <div className="small muted" style={{ marginBottom: 8 }}>Invite, bulk upload, update, disable, or delete external users.</div>
-                <ExternalUsersManager canEdit={canEditAdmin} />
+                <ExternalUsersManager canEdit={!!(isSuperAdmin || perms?.manageRecipients)} />
               </div>
             )}
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Batches</h3>
               <div className="small muted" style={{ marginBottom: 8 }}>View, edit, or delete batches. Deleting a batch removes its documents, recipients, and acknowledgements.</div>
-              <ManageBatches canEdit={canEditAdmin} onEdit={(id) => startEditBatch(id)} onClone={(id) => startCloneBatch(id)} />
+              <ManageBatches canEdit={!!(isSuperAdmin || perms?.editBatch)} onEdit={(id) => startEditBatch(id)} onClone={(id) => startCloneBatch(id)} />
             </div>
             {(isSuperAdmin || perms?.manageBusinesses) && (
               <div className="card" style={{ padding: 16 }}>
@@ -1145,7 +1145,7 @@ const AdminPanel: React.FC = () => {
                 <div style={{ display: 'grid', gap: 12 }}>
                   <BusinessesBulkUploadSection />
                   <div className="divider" />
-                <BusinessesManager canEdit={canEditAdmin} />
+                <BusinessesManager canEdit={!!(isSuperAdmin || perms?.manageBusinesses)} />
                 </div>
               </div>
             )}
@@ -1159,7 +1159,7 @@ const AdminPanel: React.FC = () => {
               <div className="card" style={{ padding: 16 }}>
                 <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Roles</h3>
                 <div className="small muted" style={{ marginBottom: 8 }}>Manage Admin and Manager assignments without editing .env. Top-level access is configured via environment variables.</div>
-                <RolesManager canEdit={canEditAdmin} isSuperAdmin={isSuperAdmin} />
+                <RolesManager canEdit={!!(isSuperAdmin || perms?.manageRoles)} isSuperAdmin={isSuperAdmin} />
               </div>
             )}
             {(isSuperAdmin || perms?.managePermissions) && (

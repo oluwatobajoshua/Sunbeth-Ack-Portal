@@ -5,13 +5,16 @@ import { getRoles, createRole, deleteRole, type DbRole } from '../../services/db
 import { GraphUser, getUsers, getOrganizationStructure } from '../../services/graphUserService';
 import { showToast } from '../../utils/alerts';
 import { isSQLiteEnabled } from '../../utils/runtimeConfig';
+import { getRolePermissions } from '../../services/rbacService';
 
 const RolesManager: React.FC<{ canEdit: boolean; isSuperAdmin: boolean }> = ({ canEdit /*, isSuperAdmin*/ }) => {
   const { getToken, login, account } = useAuthCtx();
   const [roles, setRoles] = useState<DbRole[]>([]);
   const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState<'Admin' | 'Manager'>('Manager');
+  const [role, setRole] = useState<string>('Manager');
+  const [useCustomRole, setUseCustomRole] = useState(false);
+  const [customRole, setCustomRole] = useState('');
   const sqliteEnabled = isSQLiteEnabled();
 
   // User search via Microsoft Graph
@@ -23,6 +26,20 @@ const RolesManager: React.FC<{ canEdit: boolean; isSuperAdmin: boolean }> = ({ c
   const [org, setOrg] = useState<{ departments: string[]; jobTitles: string[]; locations: string[] }>({ departments: [], jobTitles: [], locations: [] });
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  // Available roles from backend RBAC + defaults
+  const [availableRoles, setAvailableRoles] = useState<string[]>(['SuperAdmin','Admin','Manager']);
+  useEffect(() => {
+    (async () => {
+      try {
+        const rp = await getRolePermissions().catch(() => []);
+        const dyn = Array.from(new Set((rp as any[]).map((r: any) => String(r.role)).filter(Boolean)));
+        const base = ['SuperAdmin','Admin','Manager'];
+        const merged = Array.from(new Set([...base, ...dyn])).sort();
+        setAvailableRoles(merged);
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
   const load = useCallback(async () => {
     if (!sqliteEnabled) { setRoles([]); return; }
     try {
@@ -32,7 +49,7 @@ const RolesManager: React.FC<{ canEdit: boolean; isSuperAdmin: boolean }> = ({ c
       setRoles([]);
     }
   }, [sqliteEnabled]);
-  useEffect(() => { load(); }, [sqliteEnabled]);
+  useEffect(() => { load(); }, [sqliteEnabled, load]);
 
   // Load organization structure for filters
   useEffect(() => {
@@ -73,18 +90,21 @@ const RolesManager: React.FC<{ canEdit: boolean; isSuperAdmin: boolean }> = ({ c
     if (!canEdit || !sqliteEnabled) return;
     const e = email.trim().toLowerCase();
     if (!e || !e.includes('@')) { showToast('Enter a valid email', 'warning'); return; }
+    const finalRole = useCustomRole ? (customRole.trim() || role) : role;
+    if (!finalRole) { showToast('Choose a role or enter custom role', 'warning'); return; }
     setBusy(true);
     try {
-      await createRole(e, role);
+      await createRole(e, finalRole);
       setEmail('');
+      setCustomRole(''); setUseCustomRole(false);
       await load();
-      showToast('Role added', 'success');
+      showToast(`Role added (${finalRole})`, 'success');
     } catch {
       showToast('Failed to add role', 'error');
     } finally { setBusy(false); }
   };
 
-  const assignToUser = async (u: GraphUser, r: 'Admin' | 'Manager') => {
+  const assignToUser = async (u: GraphUser, r: string) => {
     if (!canEdit || !sqliteEnabled) return;
     const addr = (u.mail || u.userPrincipalName || '').trim().toLowerCase();
     if (!addr) { showToast('User has no email/UPN', 'warning'); return; }
@@ -107,7 +127,7 @@ const RolesManager: React.FC<{ canEdit: boolean; isSuperAdmin: boolean }> = ({ c
     } finally { setBusy(false); }
   };
 
-  const assignBulk = async (r: 'Admin' | 'Manager') => {
+  const assignBulk = async (r: string) => {
     if (!canEdit || !sqliteEnabled || selected.size === 0) return;
     setBusy(true);
     try {
@@ -116,7 +136,7 @@ const RolesManager: React.FC<{ canEdit: boolean; isSuperAdmin: boolean }> = ({ c
         if (u) { await assignToUser(u, r); }
       }
       setSelected(new Set());
-      showToast(`Assigned ${r} to ${selected.size} user(s)`, 'success');
+      showToast(`Assigned ${r} to selected user(s)`, 'success');
     } catch {
       showToast('Bulk assign failed', 'error');
     } finally { setBusy(false); }
@@ -187,10 +207,13 @@ const RolesManager: React.FC<{ canEdit: boolean; isSuperAdmin: boolean }> = ({ c
         </div>
         {/* Bulk actions */}
         {selected.size > 0 && (
-          <div className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+          <div className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
             <span>{selected.size} selected</span>
-            <button className="btn ghost sm" onClick={() => assignBulk('Manager')} disabled={!canEdit || busy}>Assign Manager</button>
-            <button className="btn ghost sm" onClick={() => assignBulk('Admin')} disabled={!canEdit || busy}>Assign Admin</button>
+            <select onChange={e => setRole(e.target.value)} value={role} style={{ padding: 6, border: '1px solid #ddd', borderRadius: 6 }}>
+              {availableRoles.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+            <button className="btn ghost sm" onClick={() => assignBulk(role)} disabled={!canEdit || busy}>Assign Role</button>
+            <button className="btn ghost sm" onClick={() => assignBulk('SuperAdmin')} disabled={!canEdit || busy}>Assign SuperAdmin</button>
           </div>
         )}
         {userError && <div className="small" style={{ color: '#d33', marginTop: 6 }}>{userError}</div>}
@@ -209,14 +232,19 @@ const RolesManager: React.FC<{ canEdit: boolean; isSuperAdmin: boolean }> = ({ c
                     {existing && <span className="badge" style={{ marginTop: 4 }}>{existing.role}</span>}
                   </div>
                   {!existing && (
-                    <button className="btn ghost sm" onClick={() => assignToUser(u, 'Manager')} disabled={!canEdit || busy}>Assign Manager</button>
-                  )}
-                  {!existing && (
-                    <button className="btn ghost sm" onClick={() => assignToUser(u, 'Admin')} disabled={!canEdit || busy}>Assign Admin</button>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <select value={role} onChange={e => setRole(e.target.value)} style={{ padding: 6, border: '1px solid #ddd', borderRadius: 6 }}>
+                        {availableRoles.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                      <button className="btn ghost sm" onClick={() => assignToUser(u, role)} disabled={!canEdit || busy}>Assign</button>
+                    </div>
                   )}
                   {existing && (
                     <div style={{ display: 'flex', gap: 6 }}>
-                      <button className="btn ghost sm" onClick={() => assignToUser(u, existing.role === 'Admin' ? 'Manager' : 'Admin')} disabled={!canEdit || busy}>Change to {existing.role === 'Admin' ? 'Manager' : 'Admin'}</button>
+                      <select value={role} onChange={e => setRole(e.target.value)} style={{ padding: 6, border: '1px solid #ddd', borderRadius: 6 }}>
+                        {availableRoles.map(r => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                      <button className="btn ghost sm" onClick={() => assignToUser(u, role)} disabled={!canEdit || busy}>Change to {role}</button>
                       <button className="btn ghost sm" onClick={async () => { try { setBusy(true); await deleteRole(existing.id); await load(); showToast('Role removed', 'success'); } catch { showToast('Failed to remove role', 'error'); } finally { setBusy(false); } }} disabled={!canEdit || busy}>Remove</button>
                     </div>
                   )}
@@ -229,17 +257,22 @@ const RolesManager: React.FC<{ canEdit: boolean; isSuperAdmin: boolean }> = ({ c
 
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
         <input type="email" placeholder="user@domain.com" value={email} onChange={e => setEmail(e.target.value)} style={{ padding: 8, border: '1px solid #ddd', borderRadius: 6 }} />
-        <select value={role} onChange={e => setRole(e.target.value as any)} style={{ padding: 8, border: '1px solid #ddd', borderRadius: 6 }}>
-          <option value="Manager">Manager</option>
-          <option value="Admin">Admin</option>
+        <select value={useCustomRole ? '::custom' : role} onChange={e => {
+          const v = e.target.value; if (v === '::custom') setUseCustomRole(true); else { setUseCustomRole(false); setRole(v); }
+        }} style={{ padding: 8, border: '1px solid #ddd', borderRadius: 6 }}>
+          {availableRoles.map(r => <option key={r} value={r}>{r}</option>)}
+          <option value="::custom">Custom…</option>
         </select>
+        {useCustomRole && (
+          <input placeholder="Custom role" value={customRole} onChange={e => setCustomRole(e.target.value)} style={{ padding: 8, border: '1px solid #ddd', borderRadius: 6, minWidth: 160 }} />
+        )}
         <button className="btn sm" onClick={add} disabled={!canEdit || busy}>Add</button>
         {!canEdit && <span className="small muted">Read-only</span>}
         <button className="btn ghost sm" onClick={exportRolesCsv} title="Export current role assignments as CSV">Export CSV</button>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
-        {['Admin', 'Manager'].map(k => (
+        {Object.keys(grouped).sort().map(k => (
           <div key={k} className="card" style={{ padding: 12 }}>
             <div style={{ fontWeight: 700, marginBottom: 6 }}>{k}s</div>
             {Array.isArray(grouped[k]) && grouped[k].length > 0 ? (

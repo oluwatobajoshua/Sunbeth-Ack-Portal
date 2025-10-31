@@ -1,20 +1,24 @@
-import React, { useEffect, useMemo, useState } from 'react';
+/* eslint-disable max-lines, max-lines-per-function, complexity, react-hooks/exhaustive-deps, @typescript-eslint/no-empty-function */
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { getPermissionCatalog, getRolePermissions, setRolePermissions, getUserPermissions, setUserPermissions, type PermissionDef } from '../services/rbacService';
-import { getRoles, type DbRole } from '../services/dbService';
+import { getRoles, createRole, deleteRole } from '../services/dbService';
 import { showToast } from '../utils/alerts';
 import { isSQLiteEnabled } from '../utils/runtimeConfig';
 import { useAuth } from '../context/AuthContext';
 import { getUsers, getOrganizationStructure, type GraphUser } from '../services/graphUserService';
 
-const KNOWN_ROLES = ['Admin','Manager','Employee'] as const;
-
 const RBACMatrix: React.FC = () => {
   const sqlite = isSQLiteEnabled();
-  const { account } = useAuth();
+  const { account, getToken } = useAuth();
   const [perms, setPerms] = useState<PermissionDef[]>([]);
   const [roleMap, setRoleMap] = useState<Record<string, Record<string, boolean>>>({});
+  const [roles, setRoles] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<'role'|'user'>('role');
+  const [newRole, setNewRole] = useState('');
+  const [renameFrom, setRenameFrom] = useState('');
+  const [renameTo, setRenameTo] = useState('');
+  const [adminBusy, setAdminBusy] = useState(false);
 
   const [userEmail, setUserEmail] = useState('');
   const [userMap, setUserMap] = useState<Record<string, boolean>>({});
@@ -31,14 +35,22 @@ const RBACMatrix: React.FC = () => {
       try {
         const defs = await getPermissionCatalog();
         setPerms(defs);
-        const next: Record<string, Record<string, boolean>> = {};
-        for (const role of KNOWN_ROLES) {
-          const rows = await getRolePermissions(role);
-          const map: Record<string, boolean> = {};
-          for (const d of defs) map[d.key] = false; // default false
-          rows.forEach(r => { map[r.permKey] = !!r.value; });
-          next[role] = map;
+        // Load all role permissions, derive role list dynamically
+        const all = await getRolePermissions().catch(() => []);
+        const roleNames = Array.from(new Set((all as any[]).map(r => String(r.role)).filter(Boolean)));
+        // Ensure common roles exist at least
+        for (const base of ['SuperAdmin','Admin','Manager']) {
+          if (!roleNames.includes(base)) roleNames.push(base);
         }
+        roleNames.sort();
+        const next: Record<string, Record<string, boolean>> = {};
+        for (const r of roleNames) {
+          const map: Record<string, boolean> = {};
+          for (const d of defs) map[d.key] = false; // defaults
+          (all as any[]).filter(x => x.role === r).forEach((row: any) => { map[row.permKey] = !!row.value; });
+          next[r] = map;
+        }
+        setRoles(roleNames);
         setRoleMap(next);
         // Load known users from roles DB
         if (sqlite) {
@@ -46,16 +58,14 @@ const RBACMatrix: React.FC = () => {
           const emails = Array.from(new Set(rows.map(r => r.email.toLowerCase())));
           setKnownUsers(emails);
         }
-        // Load org structure for filters
+        // Load org structure for filters (optional)
         try {
-          const token = await (async () => {
-            try { return await (useAuth() as any).getToken?.(['User.Read.All']); } catch { return undefined; }
-          })();
-          if (token) {
-            const o = await getOrganizationStructure(token);
+          const tk = await getToken?.(['User.Read.All']);
+          if (tk) {
+            const o = await getOrganizationStructure(tk);
             setOrg(o);
           }
-        } catch {}
+        } catch { /* ignore */ }
       } catch {
         showToast('Failed to load RBAC matrix', 'error');
       }
@@ -69,6 +79,70 @@ const RBACMatrix: React.FC = () => {
       showToast(`Saved ${role} permissions`, 'success');
     } catch { showToast('Failed to save role permissions', 'error'); }
     finally { setBusy(false); }
+  };
+
+  const disableRole = async (role: string) => {
+    try {
+      const next = { ...(roleMap[role] || {}) };
+      perms.forEach(p => { next[p.key] = false; });
+      setRoleMap(prev => ({ ...prev, [role]: next }));
+      await saveRole(role);
+      showToast(`Disabled ${role}`, 'success');
+    } catch { showToast('Failed to disable role', 'error'); }
+  };
+
+  const renameRole = async (from: string, to: string) => {
+    const src = (from || '').trim();
+    const dst = (to || '').trim();
+    if (!src || !dst) { showToast('Enter both source and target role names', 'warning'); return; }
+    if (src === dst) { showToast('Source and target cannot be the same', 'info'); return; }
+    setAdminBusy(true);
+    try {
+      // 1) Copy permission mapping
+      const mapping = roleMap[src] || {};
+      await setRolePermissions(dst, mapping);
+      // 2) Migrate assignments: src -> dst
+      const allRoles = await getRoles();
+      const toMove = allRoles.filter(r => (r.role || '').toLowerCase() === src.toLowerCase());
+      for (const r of toMove) {
+        try { await deleteRole(r.id); } catch (e) { /* ignore */ }
+        try { await createRole(r.email, dst); } catch (e) { /* ignore */ }
+      }
+      // 3) Disable old role mapping
+      const cleared: Record<string, boolean> = {};
+      perms.forEach(p => { cleared[p.key] = false; });
+      setRoleMap(prev => ({ ...prev, [src]: cleared }));
+      await setRolePermissions(src, cleared);
+      // 4) Update UI roles list
+      setRoles(prev => Array.from(new Set([...prev, dst])).sort());
+      showToast(`Renamed ${src} → ${dst}`, 'success');
+    } catch { showToast('Failed to rename role', 'error'); }
+    finally { setAdminBusy(false); setRenameFrom(''); setRenameTo(''); }
+  };
+
+  const removeRoleAssignments = async (role: string) => {
+    const r = (role || '').trim();
+    if (!r) return;
+    setAdminBusy(true);
+    try {
+      const all = await getRoles();
+      const list = all.filter(x => (x.role || '').toLowerCase() === r.toLowerCase());
+  for (const row of list) { try { await deleteRole(row.id); } catch (e) { /* ignore */ } }
+      showToast(`Removed ${list.length} assignment(s) for ${r}`, 'success');
+    } catch { showToast('Failed to remove assignments', 'error'); }
+    finally { setAdminBusy(false); }
+  };
+
+  const addRole = () => {
+    const r = newRole.trim();
+    if (!r) { showToast('Enter a role name', 'warning'); return; }
+    if (roles.includes(r)) { showToast('Role already exists', 'info'); return; }
+    const base: Record<string, boolean> = {};
+    perms.forEach(p => { base[p.key] = false; });
+    setRoleMap(prev => ({ ...prev, [r]: base }));
+    setRoles(prev => [...prev, r].sort());
+    setNewRole('');
+    showToast(`Added role ${r}. Configure permissions, then click Save ${r}.`, 'success');
   };
 
   const loadUser = async (email: string) => {
@@ -92,15 +166,15 @@ const RBACMatrix: React.FC = () => {
     finally { setBusy(false); }
   };
 
-  const runSearch = async () => {
+  const runSearch = useCallback(async () => {
     setErr(null);
     const q = search.trim();
     if (!q) { setResults([]); return; }
     setSearching(true);
     try {
-      const token = await (useAuth() as any).getToken?.(['User.Read.All']);
-      if (!token) throw new Error('Sign in to search directory');
-      const list = await getUsers(token, { search: q, department: filters.department, jobTitle: filters.jobTitle, location: filters.location });
+      const tk = await getToken?.(['User.Read.All']);
+      if (!tk) throw new Error('Sign in to search directory');
+      const list = await getUsers(tk, { search: q, department: filters.department, jobTitle: filters.jobTitle, location: filters.location });
       setResults(Array.isArray(list) ? list.slice(0, 100) : []);
     } catch (e: any) {
       setErr(typeof e?.message === 'string' ? e.message : 'Search failed');
@@ -108,12 +182,12 @@ const RBACMatrix: React.FC = () => {
     } finally {
       setSearching(false);
     }
-  };
+  }, [search, filters.department, filters.jobTitle, filters.location, getToken]);
 
   useEffect(() => {
     const t = setTimeout(() => { void runSearch(); }, 500);
     return () => clearTimeout(t);
-  }, [search, filters.department, filters.jobTitle, filters.location]);
+  }, [runSearch]);
 
   const grouped = useMemo(() => {
     const m: Record<string, PermissionDef[]> = {};
@@ -130,6 +204,41 @@ const RBACMatrix: React.FC = () => {
 
       {tab === 'role' && (
         <div style={{ display: 'grid', gap: 16 }}>
+          <div className="card" style={{ padding: 12 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input placeholder="New role name" value={newRole} onChange={e => setNewRole(e.target.value)} />
+              <button className="btn sm" onClick={addRole}>Add Role</button>
+            </div>
+            <div className="small muted" style={{ marginTop: 6 }}>Tip: After adding a role, set its permissions below and click Save for that role.</div>
+          </div>
+          <div className="card" style={{ padding: 12 }}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>Role administration</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <select value={renameFrom} onChange={e => setRenameFrom(e.target.value)}>
+                  <option value="">Select role…</option>
+                  {roles.map(r => (<option key={r} value={r}>{r}</option>))}
+                </select>
+                <input placeholder="Rename to…" value={renameTo} onChange={e => setRenameTo(e.target.value)} />
+                <button className="btn sm" onClick={() => renameRole(renameFrom, renameTo)} disabled={adminBusy}>Rename</button>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <select onChange={e => disableRole(e.target.value)} defaultValue="">
+                  <option value="">Disable role…</option>
+                  {roles.map(r => (<option key={r} value={r}>Disable {r}</option>))}
+                </select>
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <select onChange={e => { const v=e.target.value; if (v) removeRoleAssignments(v); }} defaultValue="">
+                  <option value="">Remove assignments…</option>
+                  {roles.map(r => (<option key={r} value={r}>Remove all {r} users</option>))}
+                </select>
+              </div>
+            </div>
+            <div className="small muted" style={{ marginTop: 6 }}>
+              Rename will copy permissions to the new role and migrate user assignments, then disable the old role. Disable sets all permissions off.
+            </div>
+          </div>
           {Object.keys(grouped).map(cat => (
             <div key={cat}>
               <div style={{ fontWeight: 700, marginBottom: 6 }}>{cat}</div>
@@ -138,7 +247,7 @@ const RBACMatrix: React.FC = () => {
                   <thead>
                     <tr>
                       <th style={{ textAlign: 'left' }}>Permission</th>
-                      {KNOWN_ROLES.map(r => (<th key={r} style={{ textAlign: 'center' }}>{r}</th>))}
+                      {roles.map(r => (<th key={r} style={{ textAlign: 'center' }}>{r}</th>))}
                     </tr>
                   </thead>
                   <tbody>
@@ -148,7 +257,7 @@ const RBACMatrix: React.FC = () => {
                           <div style={{ fontWeight: 500 }}>{p.label}</div>
                           <div className="small muted">{p.description}</div>
                         </td>
-                        {KNOWN_ROLES.map(r => (
+                        {roles.map(r => (
                           <td key={r} style={{ textAlign: 'center' }}>
                             <input
                               type="checkbox"
@@ -164,8 +273,8 @@ const RBACMatrix: React.FC = () => {
               </div>
             </div>
           ))}
-          <div style={{ display: 'flex', gap: 8 }}>
-            {KNOWN_ROLES.map(r => (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {roles.map(r => (
               <button key={r} className="btn sm" onClick={() => saveRole(r)} disabled={busy}>Save {r}</button>
             ))}
           </div>
@@ -184,7 +293,9 @@ const RBACMatrix: React.FC = () => {
               </select>
             )}
             {account?.username && (
-              <button className="btn ghost sm" onClick={() => { setUserEmail(account.username!); void loadUser(account.username!); }}>Use my email</button>
+              <button className="btn ghost sm" onClick={() => { const e = account?.username || ''; setUserEmail(e); if (e) void loadUser(e); }}>
+                Use my email
+              </button>
             )}
           </div>
           {/* Directory search to find users quickly */}

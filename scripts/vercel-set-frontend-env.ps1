@@ -78,6 +78,17 @@ function Remove-Env([string]$Name, [switch]$All) {
 vercel --version | Out-Null
 try { Set-Location (Split-Path $PSScriptRoot -Parent) } catch {}
 $script:RepoRoot = (Get-Location).Path
+
+# Safety: prevent misuse with backend-only env names
+$backendOnly = @(
+  'FIREBASE_PROJECT_ID','FIREBASE_DATABASE_URL','FIREBASE_SERVICE_ACCOUNT_JSON','DB_DRIVER','ALLOWED_ORIGINS'
+)
+if ($env:FIREBASE_PROJECT_ID -or $env:FIREBASE_DATABASE_URL -or $env:FIREBASE_SERVICE_ACCOUNT_JSON) {
+  Write-Warning 'Detected FIREBASE_* variables in current session. These belong to the backend project, not the frontend. Aborting.'
+  Write-Host 'Use sunbeth_doc_backend/scripts/vercel-set-rtdb-env.ps1 to configure backend envs.' -ForegroundColor Yellow
+  exit 2
+}
+
 $linkCmd = "vercel link --yes --project `"$Project`"" + ($(if($Scope){" --scope `"$Scope`""} else {''}))
 Write-Host "Linking to project '$Project'..." -ForegroundColor Cyan
 & cmd.exe /c $linkCmd
