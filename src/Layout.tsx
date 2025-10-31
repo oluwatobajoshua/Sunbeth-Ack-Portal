@@ -240,7 +240,9 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
                 <hr style={{ margin: '12px 0', border: 'none', borderTop: '1px solid #f4f4f4' }} />
 
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  { rbac.canSeeAdmin && <Link to="/admin"><button className="btn full sm">Admin View</button></Link> }
+                  { (rbac.canSeeAdmin || (rbac.perms && rbac.perms['viewAdmin'])) && (
+                    <Link to="/admin"><button className="btn full sm">Admin View</button></Link>
+                  ) }
                 </div>
 
                 <div style={{ height: 12 }} />
