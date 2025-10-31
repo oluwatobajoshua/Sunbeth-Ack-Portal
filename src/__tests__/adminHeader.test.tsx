@@ -71,7 +71,7 @@ describe('AdminPanel header', () => {
   test('shows Backend API indicator with health link (now under Diagnostics tab)', async () => {
     renderAdmin();
     // Open Diagnostics tab first
-    const diagTab = await screen.findByRole('button', { name: /system diagnostics/i });
+  const diagTab = await screen.findByRole('tab', { name: /system diagnostics/i });
     diagTab.click();
 
     // Host from mocked getApiBase (link inside Diagnostics -> API Status card)

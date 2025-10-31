@@ -8,7 +8,7 @@ import { useRBAC } from '../context/RBACContext';
 // import { useAuth } from '../context/AuthContext';
 import { GraphUser, GraphGroup, getGroupMembers } from '../services/graphUserService';
 import AnalyticsDashboard from './AnalyticsDashboard';
-import { exportAnalyticsExcel } from '../utils/excelExport';
+// import { exportAnalyticsExcel } from '../utils/excelExport';
 import Modal from './Modal';
 import { useFeatureFlags } from '../context/FeatureFlagsContext';
 import { sendEmail, sendEmailWithAttachmentChunks, buildBatchEmail, fetchAsBase64 /*, sendTeamsDirectMessage*/ } from '../services/notificationService';
@@ -32,6 +32,9 @@ import LocalLibraryPicker from './admin/LocalLibraryPicker';
 import ManageBatches from './admin/ManageBatches';
 import BusinessesManager from './admin/BusinessesManager';
 import BatchEditor from './admin/BatchEditor';
+import TabNav, { type TabConfig } from './ui/TabNav';
+import PageHeader from './ui/PageHeader';
+import KPIStat from './ui/KPIStat';
 
 // AdminSettings moved to ./admin/AdminSettings
 
@@ -316,7 +319,7 @@ const AdminPanel: React.FC = () => {
     }
     // Show Permission tab only if user can manage roles or permissions (Super Admin always)
     if (isSuperAdmin || perms?.manageRoles || perms?.managePermissions) {
-      base.push({ id: 'rbac', label: 'Permission', icon: '🔐' } as any);
+      base.push({ id: 'rbac', label: 'Permissions', icon: '🔐' } as any);
     }
     // Always show Notification Emails tab for super admin
     if (isSuperAdmin) {
@@ -857,79 +860,21 @@ const AdminPanel: React.FC = () => {
     <div className="container">
       <div className="card">
         {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <div>
-            <h1 style={{ margin: 0, fontSize: 24, color: 'var(--primary)' }}>Admin Panel</h1>
-            <p className="small muted">Role: {role} • {canEditAdmin ? 'Full Access' : 'Read Only'}</p>
-            {/* Intentionally removed loud role badge for a more professional, minimal header */}
-          </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {(isSuperAdmin || perms?.exportAnalytics) && (
-              <button className="btn ghost sm" onClick={async () => {
-                try {
-                  await exportAnalyticsExcel();
-                } catch (e) { console.warn('Excel export failed', e); showToast('Excel export failed', 'error'); }
-              }}>Export Excel</button>
-            )}
-          </div>
-        </div>
+        <PageHeader title="Admin Panel" subtitle={`Role: ${role} • ${canEditAdmin ? 'Full Access' : 'Read Only'}`} />
 
         {/* Tab Navigation */}
-        <div style={{ display: 'flex', gap: 4, marginBottom: 24, borderBottom: '2px solid #f0f0f0' }}>
-          {tabs.map(tab => (
-            <button 
-              key={tab.id}
-              className={activeTab === tab.id ? 'btn sm' : 'btn ghost sm'}
-              onClick={() => setActiveTab(tab.id as any)}
-              style={{ borderRadius: '8px 8px 0 0' }}
-            >
-              {tab.icon} {tab.label}
-            </button>
-          ))}
-        </div>
+        <TabNav tabs={tabs as TabConfig[]} activeId={activeTab} onChange={(id) => setActiveTab(id as any)} />
 
         {/* Tab Content */}
         {activeTab === 'overview' && (
-          <div>
+          <div id="panel-overview" role="tabpanel" aria-labelledby="tab-overview">
             <h2 style={{ fontSize: 18, marginBottom: 16 }}>System Overview</h2>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16 }}>
-              <div className="card" style={{ padding: 16, textAlign: 'center' }}>
-                <div style={{ fontSize: 28, fontWeight: 'bold', color: 'var(--primary)' }}>{overviewStats?.activeBatches ?? '—'}</div>
-                <div className="small muted">Active Batches</div>
-              </div>
-              <div className="card" style={{ padding: 16, textAlign: 'center' }}>
-                <div style={{ fontSize: 28, fontWeight: 'bold', color: '#28a745' }}>{overviewStats?.totalUsers?.toLocaleString?.() ?? '—'}</div>
-                <div className="small muted">Total Users</div>
-              </div>
-              <div className="card" style={{ padding: 16, textAlign: 'center' }}>
-                <div style={{ fontSize: 28, fontWeight: 'bold', color: '#ffc107' }}>{overviewStats ? `${overviewStats.completionRate}%` : '—'}</div>
-                <div className="small muted">Completion Rate</div>
-              </div>
-              <div className="card" style={{ padding: 16, textAlign: 'center' }}>
-                <div style={{ fontSize: 28, fontWeight: 'bold', color: '#17a2b8' }}>{overviewStats?.overdueBatches ?? 0}</div>
-                <div className="small muted">Overdue Batches</div>
-              </div>
-              {/* Database status quick card */}
-              <div className="card" style={{ padding: 16 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div>
-                    <div style={{ fontWeight: 700, color: 'var(--primary)' }}>Database Status</div>
-                    <div className="small muted">Driver: {dbDriver}</div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <span className="badge" style={{ background: dbOk===true ? '#d4edda' : dbOk===false ? '#f8d7da' : '#fff3cd', color: '#333' }}>{dbOk===true ? 'OK' : dbOk===false ? 'Error' : 'Unknown'}</span>
-                    {sqliteEnabled && (
-                      <button className="btn ghost xs" onClick={pingDb}>Refresh</button>
-                    )}
-                    {sqliteEnabled && (() => {
-                      try { const base = (getApiBase() as string) || ''; if (!base) return null; return (
-                        <a className="btn ghost xs" href={`${base}/api/diag/db`} target="_blank" rel="noreferrer">Open diag</a>
-                      ); } catch { return null; }
-                    })()}
-                  </div>
-                </div>
-                <div className="small muted" style={{ marginTop: 8 }}>This checks the backend endpoint /api/diag/db to verify connectivity. For production we expect driver=rtdb.</div>
-              </div>
+              <KPIStat label="Active Batches" value={overviewStats?.activeBatches ?? '—'} color="var(--primary)" />
+              <KPIStat label="Total Users" value={overviewStats?.totalUsers?.toLocaleString?.() ?? '—'} color="#28a745" />
+              <KPIStat label="Completion Rate" value={overviewStats ? `${overviewStats.completionRate}%` : '—'} color="#ffc107" />
+              <KPIStat label="Overdue Batches" value={overviewStats?.overdueBatches ?? 0} color="#17a2b8" />
+              {/* Database Status moved to System Diagnostics tab */}
             </div>
 
             {/* Removed Permissions Status from Overview; moved to Diagnostics tab */}
@@ -1117,6 +1062,8 @@ const AdminPanel: React.FC = () => {
 
         {activeTab === 'diagnostics' && isSuperAdmin && (
           <div style={{ display: 'grid', gap: 16 }}>
+            {/* Connectivity */}
+            <div className="small muted" style={{ fontWeight: 600 }}>Connectivity</div>
             {/* API & DB Status */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
               <div className="card" style={{ padding: 16 }}>
@@ -1141,7 +1088,15 @@ const AdminPanel: React.FC = () => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
                     <div style={{ fontWeight: 700, color: 'var(--primary)' }}>DB Status</div>
-                    <div className="small muted">Driver: {dbDriver || 'unknown'}</div>
+                    <div className="small muted">Driver: {dbDriver || 'unknown'} {(() => {
+                      try {
+                        const drv = String(dbDriver || '').toLowerCase();
+                        if (drv.includes('rtdb') || drv.includes('firebase')) {
+                          return <span className="badge" style={{ marginLeft: 6 }} title="Production database">Firebase RTDB</span>;
+                        }
+                      } catch {}
+                      return null;
+                    })()}</div>
                   </div>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <span style={{ width: 10, height: 10, borderRadius: '50%', background: dbOk===true ? '#28a745' : dbOk===false ? '#dc3545' : '#ffc107' }} />
@@ -1153,6 +1108,8 @@ const AdminPanel: React.FC = () => {
               </div>
             </div>
 
+            {/* Environment & Health */}
+            <div className="small muted" style={{ fontWeight: 600 }}>Environment & Health</div>
             {/* System Health */}
             <div className="card" style={{ padding: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1165,40 +1122,6 @@ const AdminPanel: React.FC = () => {
                 </div>
               </div>
             </div>
-
-            {/* Debug Logs */}
-            <div className="card" style={{ padding: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
-                  <h3 style={{ margin: '0 0 4px 0', fontSize: 16 }}>Debug Logs</h3>
-                  <div className="small muted">Open the batch creation debug console.</div>
-                </div>
-                <button className="btn ghost sm" onClick={() => setShowDebugConsole(true)} title="Open batch creation debug console">Open Console</button>
-              </div>
-            </div>
-
-            {/* Seed Data */}
-            {sqliteEnabled && canEditAdmin && (
-              <div className="card" style={{ padding: 16 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div>
-                    <h3 style={{ margin: '0 0 4px 0', fontSize: 16 }}>Seed Data</h3>
-                    <div className="small muted">Insert demo data for local testing.</div>
-                  </div>
-                  <button className="btn ghost sm" onClick={async () => {
-                    try {
-                      const base = (getApiBase() as string);
-                      const email = account?.username || 'seed.user@sunbeth.com';
-                      const res = await fetch(`${base}/api/seed?email=${encodeURIComponent(email)}`, { method: 'POST' });
-                      if (!res.ok) throw new Error('seed_failed');
-                      showToast('Seeded demo data', 'success');
-                    } catch {
-                      showToast('Seed failed', 'error');
-                    }
-                  }}>Run Seed</button>
-                </div>
-              </div>
-            )}
 
             {/* Permissions Status (Required Microsoft Graph scopes) */}
             <div className="card" style={{ padding: 16 }}>
@@ -1235,6 +1158,44 @@ const AdminPanel: React.FC = () => {
               </div>
             </div>
 
+            {/* Tools */}
+            <div className="small muted" style={{ fontWeight: 600 }}>Tools</div>
+            {/* Debug Logs */}
+            <div className="card" style={{ padding: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <h3 style={{ margin: '0 0 4px 0', fontSize: 16 }}>Debug Logs</h3>
+                  <div className="small muted">Open the batch creation debug console.</div>
+                </div>
+                <button className="btn ghost sm" onClick={() => setShowDebugConsole(true)} title="Open batch creation debug console">Open Console</button>
+              </div>
+            </div>
+
+            {/* Seed Data */}
+            {sqliteEnabled && canEditAdmin && (
+              <div className="card" style={{ padding: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <h3 style={{ margin: '0 0 4px 0', fontSize: 16 }}>Seed Data</h3>
+                    <div className="small muted">Insert demo data for local testing.</div>
+                  </div>
+                  <button className="btn ghost sm" onClick={async () => {
+                    try {
+                      const base = (getApiBase() as string);
+                      const email = account?.username || 'seed.user@sunbeth.com';
+                      const res = await fetch(`${base}/api/seed?email=${encodeURIComponent(email)}`, { method: 'POST' });
+                      if (!res.ok) throw new Error('seed_failed');
+                      showToast('Seeded demo data', 'success');
+                    } catch {
+                      showToast('Seed failed', 'error');
+                    }
+                  }}>Run Seed</button>
+                </div>
+              </div>
+            )}
+
+            {/* Observability */}
+            <div className="small muted" style={{ fontWeight: 600 }}>Observability</div>
             {/* Audit Logs */}
             <div className="card" style={{ padding: 16 }}>
               <h3 style={{ margin: '0 0 8px 0', fontSize: 16 }}>Audit Logs</h3>

@@ -1,4 +1,8 @@
 import React, { useEffect, useState } from 'react';
+import { useRBAC } from '../context/RBACContext';
+import { exportAnalyticsExcel } from '../utils/excelExport';
+import { exportAnalyticsCsvFull } from '../utils/csvExport';
+import { useAuth } from '../context/AuthContext';
 import { getBusinesses } from '../services/dbService';
 
 // Types for analytics data
@@ -165,8 +169,8 @@ const FilterPanel: React.FC<{ onFilterChange: (filters: any) => void; liveOption
       flexWrap: 'wrap'
     }}>
       <div>
-        <label className="small" style={{ display: 'block', marginBottom: 4 }}>Date Range:</label>
-        <select value={filters.dateRange} onChange={e => updateFilter('dateRange', e.target.value)} className="form-control">
+  <label htmlFor="f-dateRange" className="small" style={{ display: 'block', marginBottom: 4 }}>Date Range:</label>
+  <select id="f-dateRange" value={filters.dateRange} onChange={e => updateFilter('dateRange', e.target.value)} className="form-control">
           <option value="7d">Last 7 days</option>
           <option value="30d">Last 30 days</option>
           <option value="90d">Last 90 days</option>
@@ -176,8 +180,8 @@ const FilterPanel: React.FC<{ onFilterChange: (filters: any) => void; liveOption
       {liveOptions && (
         <>
           <div>
-            <label className="small" style={{ display: 'block', marginBottom: 4 }}>Business:</label>
-            <select value={filters.businessId} onChange={e => updateFilter('businessId', e.target.value)} className="form-control">
+            <label htmlFor="f-business" className="small" style={{ display: 'block', marginBottom: 4 }}>Business:</label>
+            <select id="f-business" value={filters.businessId} onChange={e => updateFilter('businessId', e.target.value)} className="form-control">
               <option value="all">All Businesses</option>
               {liveOptions.businesses.map(b => (
                 <option key={b.id} value={b.id}>{b.name}</option>
@@ -185,8 +189,8 @@ const FilterPanel: React.FC<{ onFilterChange: (filters: any) => void; liveOption
             </select>
           </div>
           <div>
-            <label className="small" style={{ display: 'block', marginBottom: 4 }}>Department:</label>
-            <select value={filters.department} onChange={e => updateFilter('department', e.target.value)} className="form-control">
+            <label htmlFor="f-dept" className="small" style={{ display: 'block', marginBottom: 4 }}>Department:</label>
+            <select id="f-dept" value={filters.department} onChange={e => updateFilter('department', e.target.value)} className="form-control">
               <option value="all">All Departments</option>
               {liveOptions.departments.map(d => (
                 <option key={d} value={d}>{d}</option>
@@ -194,8 +198,8 @@ const FilterPanel: React.FC<{ onFilterChange: (filters: any) => void; liveOption
             </select>
           </div>
           <div>
-            <label className="small" style={{ display: 'block', marginBottom: 4 }}>Group:</label>
-            <select value={filters.group} onChange={e => updateFilter('group', e.target.value)} className="form-control">
+            <label htmlFor="f-group" className="small" style={{ display: 'block', marginBottom: 4 }}>Group:</label>
+            <select id="f-group" value={filters.group} onChange={e => updateFilter('group', e.target.value)} className="form-control">
               <option value="all">All Groups</option>
               {liveOptions.groups.map(g => (
                 <option key={g} value={g}>{g}</option>
@@ -205,8 +209,8 @@ const FilterPanel: React.FC<{ onFilterChange: (filters: any) => void; liveOption
         </>
       )}
       <div>
-        <label className="small" style={{ display: 'block', marginBottom: 4 }}>Status:</label>
-        <select value={filters.status} onChange={e => updateFilter('status', e.target.value)} className="form-control">
+  <label htmlFor="f-status" className="small" style={{ display: 'block', marginBottom: 4 }}>Status:</label>
+  <select id="f-status" value={filters.status} onChange={e => updateFilter('status', e.target.value)} className="form-control">
           <option value="all">All Statuses</option>
           <option value="completed">Completed</option>
           <option value="pending">Pending</option>
@@ -214,8 +218,8 @@ const FilterPanel: React.FC<{ onFilterChange: (filters: any) => void; liveOption
         </select>
       </div>
       <div>
-        <label className="small" style={{ display: 'block', marginBottom: 4 }}>Batch Type:</label>
-        <select value={filters.batchType} onChange={e => updateFilter('batchType', e.target.value)} className="form-control">
+  <label htmlFor="f-type" className="small" style={{ display: 'block', marginBottom: 4 }}>Batch Type:</label>
+  <select id="f-type" value={filters.batchType} onChange={e => updateFilter('batchType', e.target.value)} className="form-control">
           <option value="all">All Types</option>
           <option value="policy">Policy Updates</option>
           <option value="training">Training Materials</option>
@@ -232,6 +236,7 @@ const FilterPanel: React.FC<{ onFilterChange: (filters: any) => void; liveOption
 // Main Analytics Dashboard Component
 const AnalyticsDashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
+  const { isSuperAdmin, perms } = useRBAC();
   const [data, setData] = useState<{
     kpis: KPIData;
     compliance: ComplianceData[];
@@ -239,6 +244,7 @@ const AnalyticsDashboard: React.FC = () => {
     documents: DocumentStats[];
   } | null>(null);
   const [filters, setFilters] = useState({});
+  const [reportYear, setReportYear] = useState<number>(new Date().getFullYear());
   const [liveOptions, setLiveOptions] = useState<{ businesses: Array<{ id: string; name: string }>; departments: string[]; groups: string[] }>({ businesses: [], departments: [], groups: [] });
   const [recipients, setRecipients] = useState<any[]>([]);
   const [activities, setActivities] = useState<any[]>([]);
@@ -270,6 +276,7 @@ const AnalyticsDashboard: React.FC = () => {
   const [docSearch, setDocSearch] = useState('');
   const [docPage, setDocPage] = useState(1);
   const docPageSize = 10;
+  const { account } = useAuth();
 
   const loadAnalyticsData = async () => {
     setLoading(true);
@@ -384,9 +391,21 @@ const AnalyticsDashboard: React.FC = () => {
           <p className="small muted">Last updated: {new Date(data.kpis.lastUpdated).toLocaleString()}</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <label htmlFor="report-year" className="small muted">Year:</label>
+            <select id="report-year" className="form-control" value={reportYear}
+              onChange={e => setReportYear(Number(e.target.value))}>
+              {Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i).map(y => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </div>
           <button className="btn ghost sm" onClick={() => loadAnalyticsData()}>🔄 Refresh</button>
           <button className="btn ghost sm">📋 Schedule Report</button>
-          <button className="btn sm" onClick={() => exportCsv()}>📤 Export CSV</button>
+          {(isSuperAdmin || (perms && (perms as any).exportAnalytics)) && (
+            <button className="btn sm" onClick={async () => { try { await exportAnalyticsExcel({ year: reportYear, adminEmail: account?.username }); } catch (e) { console.warn('Excel export failed', e); } }}>📘 Export Excel</button>
+          )}
+          <button className="btn sm" onClick={async () => { try { await exportAnalyticsCsvFull({ year: reportYear, adminEmail: account?.username }); } catch (e) { console.warn('CSV export failed', e); } }}>📤 Export CSV</button>
         </div>
       </div>
 

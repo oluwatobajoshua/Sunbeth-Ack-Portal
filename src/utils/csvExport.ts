@@ -1,12 +1,26 @@
-import * as XLSX from 'xlsx';
+const esc = (v: any) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+const toCsv = (rows: any[], headers: string[]): string => {
+  const head = headers.map(esc).join(',');
+  const body = rows.map(r => headers.map(h => esc(r[h])).join(',')).join('\n');
+  return head + '\n' + body;
+};
+
+const triggerDownload = (filename: string, content: string, mime = 'text/csv;charset=utf-8;') => {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url);
+};
 
 type ExportOpts = { year?: number | string, adminEmail?: string };
 
 /**
- * Export core datasets to an Excel workbook with multiple sheets for analysis.
- * Sheets: Batches, Documents, Recipients
+ * Export core datasets to CSV files mirroring the Excel export and include acknowledgements:
+ * - batches.csv
+ * - documents.csv
+ * - recipients.csv
+ * - acknowledgements.csv (yearly, legal consent timestamp included)
  */
-export const exportAnalyticsExcel = async (opts: ExportOpts = {}) => {
+export const exportAnalyticsCsvFull = async (opts: ExportOpts = {}) => {
   const sqliteEnabled = (process.env.REACT_APP_ENABLE_SQLITE === 'true') && !!process.env.REACT_APP_API_BASE;
   if (!sqliteEnabled) {
     throw new Error('SQLite API must be enabled to export analytics');
@@ -15,7 +29,6 @@ export const exportAnalyticsExcel = async (opts: ExportOpts = {}) => {
   const year = String((opts.year ?? new Date().getFullYear()));
   const adminEmail = String(opts.adminEmail || '').trim().toLowerCase();
 
-  // Fetch batches and recipients
   const [batchesRes, recRes] = await Promise.all([
     fetch(`${base}/api/batches`),
     fetch(`${base}/api/recipients`)
@@ -23,7 +36,6 @@ export const exportAnalyticsExcel = async (opts: ExportOpts = {}) => {
   const batches = await batchesRes.json().catch(() => []);
   const recipients = await recRes.json().catch(() => []);
 
-  // For documents, we need to query per batch to align with server contract
   const docsRows: any[] = [];
   for (const b of (Array.isArray(batches) ? batches : [])) {
     const id = String((b.toba_batchid || b.id));
@@ -37,8 +49,7 @@ export const exportAnalyticsExcel = async (opts: ExportOpts = {}) => {
     } catch {}
   }
 
-  // Map/normalize columns
-  const batchSheetRows = (Array.isArray(batches) ? batches : []).map((r: any) => ({
+  const batchRows = (Array.isArray(batches) ? batches : []).map((r: any) => ({
     id: String(r.toba_batchid || r.id),
     name: String(r.toba_name || r.name || ''),
     startDate: r.toba_startdate || r.startDate || '',
@@ -47,7 +58,7 @@ export const exportAnalyticsExcel = async (opts: ExportOpts = {}) => {
     description: r.description || ''
   }));
 
-  const docSheetRows = docsRows.map((d: any) => ({
+  const docRows = docsRows.map((d: any) => ({
     id: String(d.toba_documentid || d.id || ''),
     batchId: String(d.batchId || d.toba_batchid || ''),
     title: String(d.toba_title || d.title || ''),
@@ -59,7 +70,7 @@ export const exportAnalyticsExcel = async (opts: ExportOpts = {}) => {
     source: d.toba_source || d.source || ''
   }));
 
-  const recSheetRows = (Array.isArray(recipients) ? recipients : []).map((r: any) => ({
+  const recRows = (Array.isArray(recipients) ? recipients : []).map((r: any) => ({
     id: Number(r.id),
     batchId: Number(r.batchId),
     businessId: r.businessId != null ? Number(r.businessId) : '',
@@ -71,26 +82,26 @@ export const exportAnalyticsExcel = async (opts: ExportOpts = {}) => {
     primaryGroup: r.primaryGroup || ''
   }));
 
-  const wb = XLSX.utils.book_new();
-  const wsBatches = XLSX.utils.json_to_sheet(batchSheetRows);
-  const wsDocs = XLSX.utils.json_to_sheet(docSheetRows);
-  const wsRecs = XLSX.utils.json_to_sheet(recSheetRows);
+  const batchesCsv = toCsv(batchRows, ['id','name','startDate','dueDate','status','description']);
+  const documentsCsv = toCsv(docRows, ['id','batchId','title','url','version','requiresSignature','driveId','itemId','source']);
+  const recipientsCsv = toCsv(recRows, ['id','batchId','businessId','email','displayName','department','jobTitle','location','primaryGroup']);
 
-  XLSX.utils.book_append_sheet(wb, wsBatches, 'Batches');
-  XLSX.utils.book_append_sheet(wb, wsDocs, 'Documents');
-  XLSX.utils.book_append_sheet(wb, wsRecs, 'Recipients');
+  triggerDownload(`batches-${year}.csv`, batchesCsv);
+  triggerDownload(`documents-${year}.csv`, documentsCsv);
+  triggerDownload(`recipients-${year}.csv`, recipientsCsv);
 
-  // Add Acknowledgements sheet (yearly, includes legal consent timestamp)
+  // Acknowledgements
   try {
-    const acksUrl = `${base}/api/admin/acks/export?year=${encodeURIComponent(year)}`;
+    const url = `${base}/api/admin/acks/export?year=${encodeURIComponent(year)}`;
     const headers: any = {};
     if (adminEmail) headers['x-admin-email'] = adminEmail;
-    const acksRes = await fetch(acksUrl, { headers });
-    if (acksRes.ok) {
-      const json = await acksRes.json().catch(() => ({} as any));
+    const res = await fetch(url, { headers });
+    if (res.ok) {
+      const json = await res.json().catch(() => ({} as any));
       const rows = Array.isArray(json.records) ? json.records : [];
       if (rows.length > 0) {
-        const norm = rows.map((r: any) => ({
+        const headersList = ['year','batchId','batchName','documentId','documentTitle','email','displayName','department','jobTitle','location','primaryGroup','businessId','acknowledgedAt','legalConsentedAt'];
+        const csv = toCsv(rows.map((r: any) => ({
           year: String(r.year || year),
           batchId: String(r.batchId || ''),
           batchName: String(r.batchName || ''),
@@ -105,22 +116,11 @@ export const exportAnalyticsExcel = async (opts: ExportOpts = {}) => {
           businessId: r.businessId != null ? Number(r.businessId) : '',
           acknowledgedAt: String(r.acknowledgedAt || ''),
           legalConsentedAt: String(r.legalConsentedAt || '')
-        }));
-        const wsAcks = XLSX.utils.json_to_sheet(norm);
-        XLSX.utils.book_append_sheet(wb, wsAcks, 'Acknowledgements');
+        })), headersList);
+        triggerDownload(`acknowledgements-${year}.csv`, csv);
       }
     }
   } catch (e) {
-    // Non-fatal if acks export is unavailable or user lacks permission
     console.warn('Acknowledgements export failed or unavailable', e);
   }
-
-  const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-  const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `sunbeth-ack-analytics-${year}.xlsx`;
-  a.click();
-  URL.revokeObjectURL(url);
 };

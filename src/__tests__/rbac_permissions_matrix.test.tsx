@@ -57,8 +57,8 @@ describe('Permissions Matrix gating', () => {
     renderWithRBAC(rbac);
     expect(screen.queryByText(/Access Denied/i)).not.toBeInTheDocument();
     expect(screen.getByText(/Admin Panel/i)).toBeInTheDocument();
-    // "Create Batch" tab should appear with editBatch permission
-    expect(screen.getByRole('button', { name: /Create Batch/i })).toBeInTheDocument();
+  // "Create Batch" tab should appear with editBatch permission
+  expect(screen.getByRole('tab', { name: /Create Batch/i })).toBeInTheDocument();
   });
 
   test('no viewAdmin and no role yields Access Denied', async () => {
