@@ -61,14 +61,16 @@ export async function requestConsentIfNeeded(userEmail?: string | null, batchId?
   } catch { /* non-blocking */ }
   const html = `
     <div style="text-align:left">
-      <p>Before you can acknowledge documents in this batch, you must consent to the following:</p>
+      <p>By clicking “I Agree”, I hereby acknowledge and confirm that:</p>
       <ul style="margin-left:1em">
-        <li>Your acknowledgement constitutes a legally-binding record for employment compliance.</li>
-        <li>Your name and timestamp will be stored and may be presented in court if required.</li>
-        <li>Any misrepresentation is subject to disciplinary action under company policy.</li>
+        <li>I have read and understood the content of the document presented to me;</li>
+        <li>I am signing/acknowledging this document voluntarily and without coercion;</li>
+        <li>The information I have provided (if any) is true and accurate to the best of my knowledge;</li>
+        <li>My electronic acknowledgement/signature has the same legal effect as a handwritten signature, to the fullest extent permitted by applicable law; and</li>
+        <li>I consent to the electronic delivery, execution, and storage of this document by [App/Company Name].</li>
       </ul>
       ${previewUrl ? '<p style="margin:8px 0">You can preview the official PDF inside the app before agreeing.</p>' : ''}
-      <p>You may review documents without consenting, but you cannot submit acknowledgements unless you agree.</p>
+      <p>I understand that this acknowledgement is binding and enforceable.</p>
     </div>
   `;
   // Helper to show dialog with or without preview option
